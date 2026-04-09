@@ -718,7 +718,7 @@ def process_weather_data(uploaded_file):
         df = df.sort_values('record_time')
         
         df = df.set_index('record_time')
-        df_15min = df.resample('15T').interpolate(method='time')
+        df_15min = df.resample('15min').interpolate(method='time')
         df_15min = df_15min.reset_index()
         
         df_15min['date'] = (
