@@ -12,50 +12,29 @@ from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
-import matplotlib as mpl
 import holidays
 from io import BytesIO
 import zipfile
 import platform
 
 # ============================================================
-# 中文字体设置（跨平台 - 修复版）
+# 字体设置
 # ============================================================
-def setup_chinese_font():
-    """设置中文字体，支持 Windows、macOS、Linux"""
+def setup_font():
+    """设置字体"""
     system = platform.system()
     
-    # 清除 matplotlib 字体缓存
-    try:
-        fm._load_fontmanager(try_read_cache=False)
-    except:
-        pass
-    
     if system == "Linux":
-        # Streamlit Cloud 环境 - 强制使用 WenQuanYi Zen Hei
-        plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "Noto Sans CJK SC", "DejaVu Sans"]
-        plt.rcParams["axes.unicode_minus"] = False
-        return "WenQuanYi Zen Hei"
-        
-    elif system == "Darwin":  # macOS
-        plt.rcParams["font.sans-serif"] = ["PingFang SC", "Heiti SC", "STHeiti", "Arial Unicode MS"]
-        plt.rcParams["axes.unicode_minus"] = False
-        return "PingFang SC"
-        
+        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+    elif system == "Darwin":
+        plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "PingFang SC"]
     elif system == "Windows":
-        plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "KaiTi"]
-        plt.rcParams["axes.unicode_minus"] = False
-        return "Microsoft YaHei"
+        plt.rcParams["font.sans-serif"] = ["Arial", "Microsoft YaHei"]
     
     plt.rcParams["axes.unicode_minus"] = False
-    return "default"
+    return plt.rcParams["font.sans-serif"][0] if plt.rcParams["font.sans-serif"] else "default"
 
-# 设置中文字体
-used_font = setup_chinese_font()
-print(f"Using font: {used_font}")
-
-# 如果字体设置失败，使用英文标签
-USE_ENGLISH_FALLBACK = (used_font == "default")
+used_font = setup_font()
 
 st.set_page_config(
     page_title="Shaanxi Power Load Forecast System",
@@ -134,20 +113,15 @@ class EleCurve:
 
     def _parse_date_series(self, s: pd.Series) -> pd.Series:
         """Convert date column to pandas datetime."""
-        # 先转换为普通字符串类型，避免 StringDtype 问题
         s = s.astype(str)
     
-        # Already datetime?
         if pd.api.types.is_datetime64_any_dtype(s):
             return s
 
-        # Numeric: treat as Excel serial date
         if pd.api.types.is_numeric_dtype(s):
             return pd.to_datetime(s, unit="D", origin="1899-12-30", errors="coerce")
 
-        # String: try Chinese format first, then slash format
         dt_ch = pd.to_datetime(s, format=self.date_format, errors="coerce")
-        # Where failed, try 'YYYY/M/D'
         mask_fail = dt_ch.isna()
         if mask_fail.any():
             dt_slash = pd.to_datetime(s[mask_fail], format="%Y/%m/%d", errors="coerce")
@@ -612,7 +586,7 @@ class EleCurve:
 
         forecast_ele = self.ele_predict(df_day_pred, return_metrics=False)
 
-        # 4月5日特殊处理
+        # April 5th special handling
         target_date = pd.to_datetime('2026-04-05').normalize()
         date_before = pd.to_datetime('2026-04-04').normalize()
         date_after = pd.to_datetime('2026-04-06').normalize()
@@ -707,15 +681,15 @@ class EleCurve:
 
 
 # ============================================================
-# 数据处理函数
+# Data Processing Functions
 # ============================================================
 def process_weather_data(uploaded_file):
-    """处理天气数据"""
+    """Process weather data"""
     try:
         df = pd.read_excel(uploaded_file)
         
         if 'record_time' not in df.columns:
-            st.error(f"Weather data missing 'record_time' column! Found columns: {list(df.columns)}")
+            st.error(f"Weather data missing 'record_time' column! Found: {list(df.columns)}")
             return None
         
         if 'value' not in df.columns:
@@ -749,7 +723,7 @@ def process_weather_data(uploaded_file):
 
 
 def process_single_day_data(filepath, filename):
-    """处理单个用户侧用电量文件"""
+    """Process single customer load file"""
     date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
     
     if not date_match:
@@ -788,7 +762,7 @@ def process_single_day_data(filepath, filename):
 
 
 def consolidate_customer_data(uploaded_files):
-    """整合所有用户侧用电量数据"""
+    """Consolidate all customer load data"""
     all_data_frames = []
     
     for uploaded_file in uploaded_files:
@@ -821,7 +795,7 @@ def consolidate_customer_data(uploaded_files):
 
 
 def merge_weather_and_customer(weather_df, customer_df):
-    """合并天气和用电数据"""
+    """Merge weather and customer data"""
     weather_df['date_key'] = pd.to_datetime(
         weather_df['date'].str.replace('年', '-').str.replace('月', '-').str.replace('日', ''),
         format='%Y-%m-%d',
@@ -854,7 +828,7 @@ def merge_weather_and_customer(weather_df, customer_df):
 
 
 def create_future_weather(weather_df, customer_df):
-    """创建未来天气数据"""
+    """Create future weather data"""
     weather_df['date_key'] = pd.to_datetime(
         weather_df['date'].str.replace('年', '-').str.replace('月', '-').str.replace('日', ''),
         format='%Y-%m-%d',
@@ -875,41 +849,10 @@ def create_future_weather(weather_df, customer_df):
 
 
 # ============================================================
-# 绘图函数（中英文自适应）
+# Plotting Functions (English labels)
 # ============================================================
-def get_labels():
-    """根据字体设置返回中英文标签"""
-    if USE_ENGLISH_FALLBACK:
-        return {
-            "date": "Date",
-            "load": "Daily Load (kWh)",
-            "daily_title": "Daily Load Forecast",
-            "time": "Time (1-96)",
-            "load_curve": "Load (kWh)",
-            "curve_title": "Load Curve - {}",
-            "not_found": "Date {} not in forecast range"
-        }
-    else:
-        return {
-            "date": "日期",
-            "load": "预测日总用电量 (kWh)",
-            "daily_title": "日总用电量预测",
-            "time": "时段 (1-96)",
-            "load_curve": "预测负荷 (kWh)",
-            "curve_title": "预测负荷曲线 - {}",
-            "not_found": "日期 {} 不在预测范围内"
-        }
-
-
 def plot_daily_forecast(df_apr_day_forecast, start_date=None, end_date=None):
-    """绘制日总负荷预测"""
-    # 重新设置字体确保生效
-    if platform.system() == "Linux":
-        plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "Noto Sans CJK SC", "DejaVu Sans"]
-    plt.rcParams["axes.unicode_minus"] = False
-    
-    labels = get_labels()
-    
+    """Plot daily load forecast"""
     fig, ax = plt.subplots(figsize=(12, 5))
     
     plot_df = df_apr_day_forecast.copy()
@@ -919,9 +862,9 @@ def plot_daily_forecast(df_apr_day_forecast, start_date=None, end_date=None):
         plot_df = plot_df[(plot_df["date"] >= start_date) & (plot_df["date"] <= end_date)]
     
     ax.plot(plot_df["date"], plot_df["ele_day_pred"], marker="o", linewidth=2, markersize=4, color="#1f77b4")
-    ax.set_xlabel(labels["date"], fontsize=12)
-    ax.set_ylabel(labels["load"], fontsize=12)
-    ax.set_title(labels["daily_title"], fontsize=14)
+    ax.set_xlabel("Date", fontsize=12)
+    ax.set_ylabel("Daily Load (kWh)", fontsize=12)
+    ax.set_title("Daily Load Forecast", fontsize=14)
     ax.grid(True, alpha=0.3)
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -930,14 +873,7 @@ def plot_daily_forecast(df_apr_day_forecast, start_date=None, end_date=None):
 
 
 def plot_96point_curve(result, date_str):
-    """绘制96点负荷曲线"""
-    # 重新设置字体确保生效
-    if platform.system() == "Linux":
-        plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "Noto Sans CJK SC", "DejaVu Sans"]
-    plt.rcParams["axes.unicode_minus"] = False
-    
-    labels = get_labels()
-    
+    """Plot 96-point load curve"""
     fig, ax = plt.subplots(figsize=(12, 5))
     
     times = result["times"]
@@ -950,20 +886,20 @@ def plot_96point_curve(result, date_str):
         date_idx = dates_str.index(date_str)
         dt = dates[date_idx]
         ax.plot(times, X_load_pred[date_idx], marker="o", linestyle="--", linewidth=1.5, markersize=2, color="#ff7f0e")
-        ax.set_xlabel(labels["time"], fontsize=12)
-        ax.set_ylabel(labels["load_curve"], fontsize=12)
-        ax.set_title(labels["curve_title"].format(pd.Timestamp(dt).strftime('%Y-%m-%d')), fontsize=14)
+        ax.set_xlabel("Time Period (1-96)", fontsize=12)
+        ax.set_ylabel("Load (kWh)", fontsize=12)
+        ax.set_title(f"Load Curve Forecast - {pd.Timestamp(dt).strftime('%Y-%m-%d')}", fontsize=14)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
     else:
-        ax.text(0.5, 0.5, labels["not_found"].format(date_str), 
+        ax.text(0.5, 0.5, f"Date {date_str} not in forecast range", 
                 ha='center', va='center', transform=ax.transAxes, fontsize=14)
     
     return fig
 
 
 def to_excel_bytes(df):
-    """将DataFrame转换为Excel字节流"""
+    """Convert DataFrame to Excel bytes"""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
@@ -971,250 +907,170 @@ def to_excel_bytes(df):
 
 
 # ============================================================
-# Streamlit 主界面（中英文自适应）
+# Streamlit Main Interface
 # ============================================================
-def get_ui_text():
-    """根据字体设置返回UI文本"""
-    if USE_ENGLISH_FALLBACK:
-        return {
-            "title": "Shaanxi Power Load Forecast System",
-            "font_info": f"Font: {used_font}",
-            "upload": "Data Upload",
-            "weather": "Upload Weather Data (weather_hourly_data.xlsx)",
-            "customer": "Upload Customer Load Data (Multiple files)",
-            "config": "Forecast Configuration",
-            "test_days": "Test Days",
-            "test_days_help": "Number of historical days for validation",
-            "sf_start": "Spring Festival Imputation Start",
-            "sf_start_help": "Start date of Spring Festival to impute",
-            "sf_end": "Spring Festival Imputation End",
-            "sf_end_help": "End date of Spring Festival to impute",
-            "predict_start": "Forecast Start Date",
-            "predict_start_help": "Start date for output forecast",
-            "predict_end": "Forecast End Date",
-            "predict_end_help": "End date for output forecast",
-            "process_btn": "Start Processing and Forecasting",
-            "step1": "Step 1/4: Processing weather data...",
-            "step2": "Step 2/4: Processing customer load data...",
-            "step3": "Step 3/4: Merging historical data...",
-            "step4": "Step 4/4: Preparing future weather data...",
-            "preview": "Data Preview",
-            "history": "Historical Data (Load & Temperature)",
-            "future": "Future Weather Data",
-            "training": "Model Training & Forecast",
-            "metrics": "Model Evaluation Metrics",
-            "results": "Forecast Results",
-            "total": "Total Load Forecast",
-            "daily_plot": "Daily Load Forecast",
-            "curve_plot": "96-Point Load Curve Forecast",
-            "select_date": "Select date to view 96-point curve",
-            "table": "Daily Load Forecast Data",
-            "download": "Download Forecast Results",
-            "download_daily": "Download Daily Forecast",
-            "download_wide": "Download 96-Point Curve (Wide)",
-            "download_long": "Download 96-Point Curve (Long)",
-            "download_all": "Download All Results (ZIP)",
-            "no_data": "No forecast dates available",
-            "upload_error": "Please upload all required files!",
-            "processing": "Processing data...",
-            "training_model": "Training model and forecasting...",
-        }
-    else:
-        return {
-            "title": "陕西电力负荷预测系统",
-            "font_info": f"当前使用字体: {used_font}",
-            "upload": "数据上传",
-            "weather": "上传天气数据 (weather_hourly_data.xlsx)",
-            "customer": "上传用户侧用电量数据 (多个文件)",
-            "config": "预测配置",
-            "test_days": "测试集天数",
-            "test_days_help": "用于验证的历史数据天数",
-            "sf_start": "春节填充开始日期",
-            "sf_start_help": "需要填充的春节假期开始日期",
-            "sf_end": "春节填充结束日期",
-            "sf_end_help": "需要填充的春节假期结束日期",
-            "predict_start": "预测起始日期",
-            "predict_start_help": "需要输出预测结果的起始日期",
-            "predict_end": "预测结束日期",
-            "predict_end_help": "需要输出预测结果的结束日期",
-            "process_btn": "开始处理数据并预测",
-            "step1": "步骤1/4: 处理天气数据...",
-            "step2": "步骤2/4: 整合用户用电数据...",
-            "step3": "步骤3/4: 合并历史数据...",
-            "step4": "步骤4/4: 准备未来天气数据...",
-            "preview": "数据预览",
-            "history": "历史数据 (含用电量和温度)",
-            "future": "未来天气数据",
-            "training": "模型训练与预测",
-            "metrics": "模型评估指标",
-            "results": "预测结果展示",
-            "total": "总用电量预测",
-            "daily_plot": "日总用电量预测",
-            "curve_plot": "96点负荷曲线预测",
-            "select_date": "选择日期查看96点负荷曲线",
-            "table": "日总用电量预测数据",
-            "download": "下载预测结果",
-            "download_daily": "下载日总预测",
-            "download_wide": "下载96点曲线(宽表)",
-            "download_long": "下载96点曲线(长表)",
-            "download_all": "下载所有预测结果 (ZIP)",
-            "no_data": "没有可用的预测日期",
-            "upload_error": "请先上传所有必需的数据文件！",
-            "processing": "正在处理数据...",
-            "training_model": "正在训练模型并预测...",
-        }
-
-
 def main():
-    ui = get_ui_text()
-    
-    st.title(f"⚡ {ui['title']}")
-    st.markdown(f"*{ui['font_info']}*")
+    st.title("⚡ Shaanxi Power Load Forecast System")
     st.markdown("---")
     
-    # 侧边栏
+    # Sidebar - File upload and configuration
     with st.sidebar:
-        st.header(f"📁 {ui['upload']}")
+        st.header("📁 Data Upload")
         
         weather_file = st.file_uploader(
-            ui['weather'],
+            "Upload Weather Data (weather_hourly_data.xlsx)",
             type=["xlsx"],
             key="weather"
         )
         
         customer_files = st.file_uploader(
-            ui['customer'],
+            "Upload Customer Load Data (Multiple files)",
             type=["xlsx"],
             accept_multiple_files=True,
             key="customer"
         )
         
         st.markdown("---")
-        st.header(f"⚙️ {ui['config']}")
+        st.header("⚙️ Forecast Configuration")
         
         test_days = st.number_input(
-            ui['test_days'],
+            "Test Days",
             min_value=3,
             max_value=30,
             value=7,
-            help=ui['test_days_help']
+            help="Number of historical days for validation"
         )
         
         sf_start = st.date_input(
-            ui['sf_start'],
+            "Spring Festival Imputation Start",
             value=pd.to_datetime("2026-02-09"),
-            help=ui['sf_start_help']
+            help="Start date of Spring Festival holiday to impute"
         )
         
         sf_end = st.date_input(
-            ui['sf_end'],
+            "Spring Festival Imputation End",
             value=pd.to_datetime("2026-02-25"),
-            help=ui['sf_end_help']
+            help="End date of Spring Festival holiday to impute"
         )
         
         predict_start = st.date_input(
-            ui['predict_start'],
+            "Forecast Start Date",
             value=pd.to_datetime("2026-04-02"),
-            help=ui['predict_start_help']
+            help="Start date for output forecast results"
         )
         
         predict_end = st.date_input(
-            ui['predict_end'],
+            "Forecast End Date",
             value=pd.to_datetime("2026-04-14"),
-            help=ui['predict_end_help']
+            help="End date for output forecast results"
         )
         
         st.markdown("---")
         
-        process_btn = st.button(f"🚀 {ui['process_btn']}", type="primary", use_container_width=True)
+        process_btn = st.button("🚀 Start Processing and Forecasting", type="primary", use_container_width=True)
     
-    # 初始化session_state
+    # Initialize session_state
     if 'data_processed' not in st.session_state:
         st.session_state.data_processed = False
     if 'prediction_done' not in st.session_state:
         st.session_state.prediction_done = False
     
-    # 处理数据并预测
+    # Process data and forecast
     if process_btn and weather_file and customer_files:
         try:
-            with st.spinner(ui['processing']):
-                st.info(f"📊 {ui['step1']}")
+            with st.spinner("Processing data..."):
+                # Process weather data
+                st.info("📊 Step 1/4: Processing weather data...")
                 weather_df = process_weather_data(weather_file)
                 if weather_df is None:
                     st.error("Weather data processing failed")
                     return
                 st.success(f"✅ Weather data processed: {len(weather_df)} records")
                 
-                st.info(f"📊 {ui['step2']}")
+                # Consolidate customer data
+                st.info("📊 Step 2/4: Processing customer load data...")
                 customer_df = consolidate_customer_data(customer_files)
                 if customer_df.empty:
                     st.error("Customer data processing failed")
                     return
                 st.success(f"✅ Customer data processed: {len(customer_df)} records")
                 
-                st.info(f"📊 {ui['step3']}")
+                # Merge data
+                st.info("📊 Step 3/4: Merging historical data...")
                 merged_df = merge_weather_and_customer(weather_df, customer_df)
                 st.success(f"✅ Historical data merged: {len(merged_df)} records")
                 
-                st.info(f"📊 {ui['step4']}")
+                # Create future weather data
+                st.info("📊 Step 4/4: Preparing future weather data...")
                 future_weather_df = create_future_weather(weather_df, customer_df)
                 st.success(f"✅ Future weather prepared: {len(future_weather_df)} records")
                 
                 st.session_state.merged_df = merged_df
                 st.session_state.future_weather_df = future_weather_df
                 
+                # Data preview
                 st.markdown("---")
-                st.subheader(f"📋 {ui['preview']}")
+                st.subheader("📋 Data Preview")
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.write(f"**{ui['history']}**")
+                    st.write("**Historical Data (Load & Temperature)**")
                     st.dataframe(merged_df.head(10), use_container_width=True)
                 
                 with col2:
-                    st.write(f"**{ui['future']}**")
+                    st.write("**Future Weather Data**")
                     st.dataframe(future_weather_df.head(10), use_container_width=True)
             
-            with st.spinner(ui['training_model']):
+            # Model training and forecasting
+            with st.spinner("Training model and forecasting..."):
                 st.markdown("---")
-                st.subheader(f"🔮 {ui['training']}")
+                st.subheader("🔮 Model Training & Forecast")
                 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
+                # Initialize model
                 status_text.text("Initializing model...")
                 progress_bar.progress(10)
                 model = EleCurve()
                 
+                # Prepare data
                 status_text.text("Preparing data...")
                 progress_bar.progress(20)
                 model.prepare_data(merged_df)
                 
+                # Spring Festival imputation
                 status_text.text("Imputing Spring Festival data...")
                 progress_bar.progress(30)
                 custom_sf_dates = pd.date_range(start=sf_start, end=sf_end)
                 model.perform_sf_imputation(sf_dates_to_impute=custom_sf_dates)
                 
-                status_text.text("Splitting train/test...")
+                # Split data
+                status_text.text("Splitting train/test sets...")
                 progress_bar.progress(40)
                 ele_train, ele_test, prop_train, prop_test = model.split_last_n_days(test_days=test_days)
                 
+                # Train daily load model
                 status_text.text("Training daily load model...")
                 progress_bar.progress(50)
                 model.ele_fit(ele_train)
                 
+                # Evaluate test set
                 status_text.text("Evaluating test set...")
                 progress_bar.progress(60)
                 forecast_ele, ele_metrics = model.ele_predict(ele_test)
                 
-                status_text.text("Performing FPCA...")
+                # FPCA
+                status_text.text("Performing FPCA analysis...")
                 progress_bar.progress(70)
                 model.prop_fpca_fit(prop_train)
                 
-                status_text.text("Training curve model...")
+                # Train score model
+                status_text.text("Training load curve model...")
                 progress_bar.progress(80)
                 model.prop_score_fit(ele_train)
                 
+                # Predict future
                 status_text.text("Forecasting future load...")
                 progress_bar.progress(90)
                 future_result = model.predict_future_curve(future_weather_df, return_long=True)
@@ -1222,15 +1078,18 @@ def main():
                 progress_bar.progress(100)
                 status_text.text("Training complete!")
                 
+                # Save results to session_state
                 st.session_state.model = model
                 st.session_state.future_result = future_result
                 st.session_state.ele_metrics = ele_metrics
                 st.session_state.prediction_done = True
                 
+                # Prepare daily forecast data
                 df_apr_day_forecast = future_result["forecast_ele"][["ds", "yhat"]].copy()
                 df_apr_day_forecast.rename(columns={"ds": "date", "yhat": "ele_day_pred"}, inplace=True)
                 st.session_state.df_apr_day_forecast = df_apr_day_forecast
                 
+                # Display evaluation metrics
                 st.success("✅ Model training complete!")
                 
                 col1, col2, col3 = st.columns(3)
@@ -1247,34 +1106,38 @@ def main():
             st.code(traceback.format_exc())
     
     elif process_btn:
-        st.error(ui['upload_error'])
+        st.error("Please upload all required data files!")
     
-    # 显示预测结果
+    # Display forecast results
     if st.session_state.prediction_done:
         st.markdown("---")
-        st.subheader(f"📈 {ui['results']}")
+        st.subheader("📈 Forecast Results")
         
         future_result = st.session_state.future_result
         df_apr_day_forecast = st.session_state.df_apr_day_forecast
         
+        # Filter by date range
         df_apr_day_forecast["date"] = pd.to_datetime(df_apr_day_forecast["date"])
         mask = (df_apr_day_forecast["date"] >= pd.to_datetime(predict_start)) & \
                (df_apr_day_forecast["date"] <= pd.to_datetime(predict_end))
         df_filtered = df_apr_day_forecast[mask]
         
+        # Calculate total
         month_total = df_filtered["ele_day_pred"].sum()
         
         st.metric(
-            f"📅 {predict_start.strftime('%Y-%m-%d')} to {predict_end.strftime('%Y-%m-%d')} {ui['total']}",
+            f"📅 {predict_start.strftime('%Y-%m-%d')} to {predict_end.strftime('%Y-%m-%d')} Total Load Forecast",
             f"{month_total:,.2f} kWh"
         )
         
-        st.markdown(f"#### {ui['daily_plot']}")
+        # Daily load forecast plot
+        st.markdown("#### Daily Load Forecast")
         fig1 = plot_daily_forecast(df_apr_day_forecast, pd.to_datetime(predict_start), pd.to_datetime(predict_end))
         st.pyplot(fig1)
         plt.close(fig1)
         
-        st.markdown(f"#### {ui['curve_plot']}")
+        # 96-point curve
+        st.markdown("#### 96-Point Load Curve Forecast")
         
         curve_dates = future_result["df_curve_pred_wide"]["date"].unique()
         curve_dates_filtered = []
@@ -1285,7 +1148,7 @@ def main():
         
         if len(curve_dates_filtered) > 0:
             selected_date = st.selectbox(
-                ui['select_date'],
+                "Select date to view 96-point load curve",
                 options=curve_dates_filtered
             )
             
@@ -1293,20 +1156,22 @@ def main():
             st.pyplot(fig2)
             plt.close(fig2)
         else:
-            st.warning(ui['no_data'])
+            st.warning("No forecast dates available")
         
-        st.markdown(f"#### {ui['table']}")
+        # Data table
+        st.markdown("#### Daily Load Forecast Data")
         st.dataframe(df_filtered, use_container_width=True)
         
+        # Download buttons
         st.markdown("---")
-        st.subheader(f"📥 {ui['download']}")
+        st.subheader("📥 Download Forecast Results")
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
             excel_bytes = to_excel_bytes(df_filtered)
             st.download_button(
-                label=f"📊 {ui['download_daily']}",
+                label="📊 Download Daily Forecast",
                 data=excel_bytes,
                 file_name=f"daily_forecast_{predict_start}_{predict_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1321,7 +1186,7 @@ def main():
             ]
             excel_bytes2 = to_excel_bytes(df_curve_filtered)
             st.download_button(
-                label=f"📈 {ui['download_wide']}",
+                label="📈 Download 96-Point Curve (Wide)",
                 data=excel_bytes2,
                 file_name=f"curve_96_wide_{predict_start}_{predict_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1336,12 +1201,13 @@ def main():
             ]
             excel_bytes3 = to_excel_bytes(df_curve_long_filtered)
             st.download_button(
-                label=f"📋 {ui['download_long']}",
+                label="📋 Download 96-Point Curve (Long)",
                 data=excel_bytes3,
                 file_name=f"curve_96_long_{predict_start}_{predict_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
+        # Complete results ZIP
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f"daily_forecast_{predict_start}_{predict_end}.xlsx", excel_bytes)
@@ -1351,7 +1217,7 @@ def main():
             zf.writestr("daily_forecast_full.xlsx", to_excel_bytes(df_apr_day_forecast))
         
         st.download_button(
-            label=f"📦 {ui['download_all']}",
+            label="📦 Download All Results (ZIP)",
             data=zip_buffer.getvalue(),
             file_name="load_prediction_results.zip",
             mime="application/zip",
