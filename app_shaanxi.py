@@ -281,18 +281,25 @@ class EleCurve:
         if self._original_df_day is None or self._original_df_prop is None:
             raise ValueError("请先调用 prepare_data()")
 
-        dates_to_impute_series = pd.Series([], dtype='datetime64[ns]')
+        dates_to_impute_series = None
 
         if sf_dates_to_impute is not None:
-            dates_to_impute_series = pd.Series(sf_dates_to_impute).dt.normalize().unique()
+            # 确保转换为 pandas Series
+            if isinstance(sf_dates_to_impute, pd.DatetimeIndex):
+                dates_to_impute_series = pd.Series(sf_dates_to_impute).dt.normalize().unique()
+            else:
+                dates_to_impute_series = pd.Series(sf_dates_to_impute).dt.normalize().unique()
+            dates_to_impute_series = pd.Series(dates_to_impute_series)
         elif self.sf_imputation_dates is not None and len(self.sf_imputation_dates) > 0:
             dates_to_impute_series = pd.Series(self.sf_imputation_dates).dt.normalize().unique()
+            dates_to_impute_series = pd.Series(dates_to_impute_series)
         else:
             self.df_day = self._original_df_day.copy()
             self.df_prop = self._original_df_prop.copy()
             return
 
-        if dates_to_impute_series.empty:
+        # 使用 len() 判断是否为空，而不是 .empty
+        if dates_to_impute_series is None or len(dates_to_impute_series) == 0:
             self.df_day = self._original_df_day.copy()
             self.df_prop = self._original_df_prop.copy()
             return
@@ -301,7 +308,7 @@ class EleCurve:
         df_day_sf_original = self._original_df_day[mask_sf].copy()
         df_day_no_sf = self._original_df_day[~mask_sf].copy()
 
-        if df_day_sf_original.empty:
+        if len(df_day_sf_original) == 0:
             self.df_day = self._original_df_day.copy()
             self.df_prop = self._original_df_prop.copy()
             return
