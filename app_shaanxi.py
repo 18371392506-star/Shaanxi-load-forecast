@@ -133,18 +133,28 @@ class EleCurve:
         self.X_prop_pred = None
         self.X_load_pred = None
 
-    def _parse_date_series(self, s: pd.Series) -> pd.Series:
-        if np.issubdtype(s.dtype, np.datetime64):
-            return s
-        if np.issubdtype(s.dtype, np.number):
-            return pd.to_datetime(s, unit="D", origin="1899-12-30", errors="coerce")
-        s_str = s.astype(str)
-        dt_ch = pd.to_datetime(s_str, format=self.date_format, errors="coerce")
-        mask_fail = dt_ch.isna()
-        if mask_fail.any():
-            dt_slash = pd.to_datetime(s_str[mask_fail], format="%Y/%m/%d", errors="coerce")
-            dt_ch[mask_fail] = dt_slash
-        return dt_ch
+def _parse_date_series(self, s: pd.Series) -> pd.Series:
+    """Convert date column to pandas datetime."""
+    # 先转换为普通字符串类型，避免 StringDtype 问题
+    s = s.astype(str)
+    
+    # Already datetime?
+    if pd.api.types.is_datetime64_any_dtype(s):
+        return s
+
+    # Numeric: treat as Excel serial date
+    if pd.api.types.is_numeric_dtype(s):
+        return pd.to_datetime(s, unit="D", origin="1899-12-30", errors="coerce")
+
+    # String: try Chinese format first, then slash format
+    dt_ch = pd.to_datetime(s, format=self.date_format, errors="coerce")
+    # Where failed, try 'YYYY/M/D'
+    mask_fail = dt_ch.isna()
+    if mask_fail.any():
+        dt_slash = pd.to_datetime(s[mask_fail], format="%Y/%m/%d", errors="coerce")
+        dt_ch[mask_fail] = dt_slash
+
+    return dt_ch
 
     def _init_holidays(self, dates: pd.Series):
         years = sorted(dates.dt.year.unique().tolist())
