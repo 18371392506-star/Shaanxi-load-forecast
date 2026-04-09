@@ -18,26 +18,27 @@ import zipfile
 import platform
 
 # ============================================================
-# 字体设置
+# 中文字体设置（跨平台）
 # ============================================================
-def setup_font():
-    """设置字体"""
+def setup_chinese_font():
+    """设置中文字体，支持 Windows、macOS、Linux"""
     system = platform.system()
     
     if system == "Linux":
-        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
-    elif system == "Darwin":
-        plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "PingFang SC"]
+        # Streamlit Cloud 环境
+        plt.rcParams["font.sans-serif"] = ["WenQuanYi Zen Hei", "Noto Sans CJK SC", "DejaVu Sans"]
+    elif system == "Darwin":  # macOS
+        plt.rcParams["font.sans-serif"] = ["PingFang SC", "Heiti SC", "Arial Unicode MS"]
     elif system == "Windows":
-        plt.rcParams["font.sans-serif"] = ["Arial", "Microsoft YaHei"]
+        plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial"]
     
     plt.rcParams["axes.unicode_minus"] = False
     return plt.rcParams["font.sans-serif"][0] if plt.rcParams["font.sans-serif"] else "default"
 
-used_font = setup_font()
+used_font = setup_chinese_font()
 
 st.set_page_config(
-    page_title="Shaanxi Power Load Forecast System",
+    page_title="陕西电力负荷预测系统",
     page_icon="⚡",
     layout="wide"
 )
@@ -110,6 +111,14 @@ class EleCurve:
         self.df_pc_forecast = None
         self.X_prop_pred = None
         self.X_load_pred = None
+        
+        # 保存训练集和测试集数据用于可视化
+        self.ele_train = None
+        self.ele_test = None
+        self.prop_train = None
+        self.prop_test = None
+        self.test_forecast = None
+        self.test_curve_result = None
 
     def _parse_date_series(self, s: pd.Series) -> pd.Series:
         """Convert date column to pandas datetime."""
@@ -159,23 +168,11 @@ class EleCurve:
         is_spring = hol_names.str.contains("春节", na=False)
         is_national = hol_names.str.contains("国庆", na=False)
 
-        is_newyear = hol_names.str.contains("元旦", na=False)
         is_qingming = hol_names.str.contains("清明", na=False)
-        is_labor = hol_names.str.contains("劳动节", na=False) | \
-                   hol_names.str.contains("勞動節", na=False) | \
-                   hol_names.str.contains("五一", na=False)
-        is_dragonboat = hol_names.str.contains("端午", na=False)
-        is_midautumn = hol_names.str.contains("中秋", na=False)
 
         df["festival_qingming"] = (is_qingming & is_holiday).astype(int)
-
         df["festival_long"] = ((is_spring | is_national) & is_holiday).astype(int)
-
-        df["festival_middle"] = (
-            is_holiday &
-            (~df["festival_long"].astype(bool))
-        ).astype(int)
-        
+        df["festival_middle"] = (is_holiday & (~df["festival_long"].astype(bool))).astype(int)
         df["is_spring_festival"] = is_spring.astype(int)
 
         return df
@@ -253,7 +250,6 @@ class EleCurve:
             X_prop_pred_sf = X_prop_pred_sf / row_sum
 
         ele_pred_series_sf = sf_ele_forecast.set_index("ds").loc[sf_df_pc_forecast.index, "yhat"].values
-
         X_load_pred_sf = X_prop_pred_sf * ele_pred_series_sf[:, None]
 
         imputed_df_day = pd.DataFrame({
@@ -283,16 +279,14 @@ class EleCurve:
 
     def perform_sf_imputation(self, sf_dates_to_impute: pd.Series = None):
         if self._original_df_day is None or self._original_df_prop is None:
-            raise ValueError("Call prepare_data() first.")
+            raise ValueError("请先调用 prepare_data()")
 
         dates_to_impute_series = pd.Series([], dtype='datetime64[ns]')
 
         if sf_dates_to_impute is not None:
             dates_to_impute_series = pd.Series(sf_dates_to_impute).dt.normalize().unique()
-            dates_to_impute_series = pd.Series(dates_to_impute_series).dt.normalize()
         elif self.sf_imputation_dates is not None and len(self.sf_imputation_dates) > 0:
             dates_to_impute_series = pd.Series(self.sf_imputation_dates).dt.normalize().unique()
-            dates_to_impute_series = pd.Series(dates_to_impute_series).dt.normalize()
         else:
             self.df_day = self._original_df_day.copy()
             self.df_prop = self._original_df_prop.copy()
@@ -316,9 +310,7 @@ class EleCurve:
         df_prop_no_sf = self._original_df_prop[~mask_sf_prop].copy()
 
         imputed_df_day, imputed_df_prop = self._impute_sf_segment_helper(
-            df_day_no_sf,
-            df_prop_no_sf,
-            df_day_sf_original
+            df_day_no_sf, df_prop_no_sf, df_day_sf_original
         )
 
         self.df_day = pd.concat([df_day_no_sf, imputed_df_day]).sort_values("ds").reset_index(drop=True)
@@ -326,11 +318,10 @@ class EleCurve:
 
     def prepare_future_data(self, df_pred):
         df_pred = df_pred.copy()
-
         need_cols = ["date", "time", "temp"]
         missing_cols = [c for c in need_cols if c not in df_pred.columns]
         if missing_cols:
-            raise ValueError(f"df_pred missing required columns: {missing_cols}")
+            raise ValueError(f"df_pred 缺少必要列: {missing_cols}")
 
         df_pred["date"] = self._parse_date_series(df_pred["date"])
         df_pred = df_pred.sort_values(["date", "time"]).reset_index(drop=True)
@@ -358,7 +349,7 @@ class EleCurve:
 
     def ele_predict(self, ele_test, return_metrics=True):
         if self.model_ele is None:
-            raise ValueError("Call ele_fit() first.")
+            raise ValueError("请先调用 ele_fit()")
 
         future = ele_test[["ds"] + [f for f in self.features if f in ele_test.columns]].copy()
         for f in self.features:
@@ -371,11 +362,9 @@ class EleCurve:
         if return_metrics and "y" in ele_test.columns:
             y_true = ele_test["y"].values
             y_pred = forecast["yhat"].values
-
             mae = mean_absolute_error(y_true, y_pred)
             rmse = np.sqrt(mean_squared_error(y_true, y_pred))
             mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-6)))
-
             metrics = {"mae": mae, "rmse": rmse, "mape": mape}
             return forecast, metrics
 
@@ -389,16 +378,9 @@ class EleCurve:
         X_train_prop = curve_mat_train.to_numpy()
         grid_points = curve_mat_train.columns.to_numpy()
 
-        fd_train = skfda.FDataGrid(
-            data_matrix=X_train_prop,
-            grid_points=grid_points
-        )
+        fd_train = skfda.FDataGrid(data_matrix=X_train_prop, grid_points=grid_points)
 
-        n_comp_init = min(
-            self.fpca_max_components,
-            X_train_prop.shape[0],
-            X_train_prop.shape[1]
-        )
+        n_comp_init = min(self.fpca_max_components, X_train_prop.shape[0], X_train_prop.shape[1])
         fpca_tmp = FPCA(n_components=n_comp_init)
         fpca_tmp.fit(fd_train)
 
@@ -407,7 +389,7 @@ class EleCurve:
         if k == 0 and len(cum_ratio) > 0: k = 1
         if k == 0 and n_comp_init > 0: k = n_comp_init
         if k == 0:
-            raise ValueError("FPCA could not determine components.")
+            raise ValueError("FPCA 无法确定组件数量")
 
         fpca = FPCA(n_components=k)
         fpca.fit(fd_train)
@@ -437,46 +419,36 @@ class EleCurve:
         self.pc_cols = [c for c in df_scores.columns if c.startswith("PC")]
         self.k = k
 
-        return {
-            "fpca": fpca,
-            "k": k,
-            "cum_ratio": cum_ratio,
-            "df_scores": df_scores,
-            "curve_mat_train": curve_mat_train
-        }
+        return {"fpca": fpca, "k": k, "cum_ratio": cum_ratio, "df_scores": df_scores}
 
     def prop_score_fit(self, ele_train):
         if self.df_scores is None:
-            raise ValueError("Call prop_fpca_fit() first to obtain scores.")
+            raise ValueError("请先调用 prop_fpca_fit()")
 
         df_pc_model = self.df_scores.merge(
             ele_train[["ds"] + [f for f in self.features if f in ele_train.columns]].rename(columns={"ds": "date"}),
-            on="date",
-            how="left"
+            on="date", how="left"
         ).sort_values("date").reset_index(drop=True)
 
         df_pc_model.dropna(subset=self.features, inplace=True)
-
         X_pc_train = df_pc_model[self.features]
         Y_pc_train = df_pc_model[self.pc_cols]
 
         if X_pc_train.empty or Y_pc_train.empty:
-            raise ValueError("No valid data for training the FPCA score model.")
+            raise ValueError("没有有效数据训练 FPCA 分数模型")
 
         model_score = MultiOutputRegressor(self.score_model_base)
         model_score.fit(X_pc_train, Y_pc_train)
-
         self.model_score = model_score
         return self
 
     def prop_score_predict(self, ele_test):
         if self.model_score is None:
-            raise ValueError("Call prop_score_fit() first.")
+            raise ValueError("请先调用 prop_score_fit()")
         if self.fpca is None:
-            raise ValueError("Call prop_fpca_fit() first to initialize FPCA components.")
+            raise ValueError("请先调用 prop_fpca_fit()")
 
         df_test_feat = ele_test[["ds"] + [f for f in self.features if f in ele_test.columns]].rename(columns={"ds": "date"}).copy()
-
         for f in self.features:
             if f not in df_test_feat.columns:
                 df_test_feat[f] = 0
@@ -484,36 +456,28 @@ class EleCurve:
         X_pc_test = df_test_feat[self.features]
         Y_pc_pred = self.model_score.predict(X_pc_test)
 
-        df_pc_forecast = pd.DataFrame(
-            Y_pc_pred,
-            index=df_test_feat["date"],
-            columns=self.pc_cols
-        )
-
+        df_pc_forecast = pd.DataFrame(Y_pc_pred, index=df_test_feat["date"], columns=self.pc_cols)
         self.df_pc_forecast = df_pc_forecast
         return df_pc_forecast
 
     def ele_curve_predict(self, ele_test, prop_test=None, return_metrics=True):
         if self.forecast_ele is None:
             self.ele_predict(ele_test, return_metrics=False)
-
         if self.df_pc_forecast is None:
             self.prop_score_predict(ele_test)
-        
         if self.components is None or self.mean_func is None:
-            raise ValueError("FPCA components and mean function not initialized.")
+            raise ValueError("FPCA 组件未初始化")
 
-        common_dates_index_forecast_ele = pd.Index(self.forecast_ele['ds'].dt.normalize())
-        common_dates_index_df_pc_forecast = pd.Index(self.df_pc_forecast.index.normalize())
-        common_ds = common_dates_index_forecast_ele.intersection(common_dates_index_df_pc_forecast)
+        common_ds = pd.Index(self.forecast_ele['ds'].dt.normalize()).intersection(
+            pd.Index(self.df_pc_forecast.index.normalize())
+        )
         
         forecast_ele_aligned = self.forecast_ele[self.forecast_ele['ds'].dt.normalize().isin(common_ds)].set_index('ds').sort_index()
         df_pc_forecast_aligned = self.df_pc_forecast.loc[common_ds].sort_index()
         
         X_prop_pred = df_pc_forecast_aligned[self.pc_cols].values @ self.components + self.mean_func
-
         row_sum = X_prop_pred.sum(axis=1, keepdims=True)
-        row_sum[row_sum == 0] = 1.0 
+        row_sum[row_sum == 0] = 1.0
         X_prop_pred = X_prop_pred / row_sum
 
         if self.clip_prop_nonnegative:
@@ -523,9 +487,7 @@ class EleCurve:
             X_prop_pred = X_prop_pred / row_sum
 
         self.X_prop_pred = X_prop_pred
-
         ele_pred_series = forecast_ele_aligned["yhat"].values
-
         X_load_pred = X_prop_pred * ele_pred_series[:, None]
         self.X_load_pred = X_load_pred
 
@@ -539,80 +501,51 @@ class EleCurve:
         }
 
         if return_metrics and prop_test is not None:
-            curve_mat_test_prop = prop_test.pivot(index="date", columns="time", values="ele_prop")
-            curve_mat_test_prop = curve_mat_test_prop.sort_index(axis=1)
-
             curve_mat_test_load = prop_test.pivot(index="date", columns="time", values="ele")
             curve_mat_test_load = curve_mat_test_load.sort_index(axis=1)
 
-            common_times = pd.Index(self.grid_points).intersection(curve_mat_test_prop.columns)
-            if common_times.empty:
-                return result
+            common_times = pd.Index(self.grid_points).intersection(curve_mat_test_load.columns)
+            if not common_times.empty:
+                curve_mat_test_load = curve_mat_test_load.loc[:, common_times].dropna(axis=0)
+                X_load_true = curve_mat_test_load.to_numpy()
 
-            curve_mat_test_prop = curve_mat_test_prop.loc[:, common_times].dropna(axis=0)
-            curve_mat_test_load = curve_mat_test_load.loc[curve_mat_test_prop.index, common_times]
+                pred_idx = pd.Index(df_pc_forecast_aligned.index)
+                true_idx = curve_mat_test_load.index
+                common_dates = pred_idx.intersection(true_idx)
 
-            X_prop_true = curve_mat_test_prop.to_numpy()
-            X_load_true = curve_mat_test_load.to_numpy()
+                if not common_dates.empty:
+                    pred_pos = pred_idx.get_indexer(common_dates)
+                    true_pos = true_idx.get_indexer(common_dates)
 
-            pred_idx = pd.Index(df_pc_forecast_aligned.index)
-            true_idx = curve_mat_test_prop.index
-            common_dates = pred_idx.intersection(true_idx)
+                    X_load_pred_aligned = X_load_pred[pred_pos]
+                    X_load_true_aligned = X_load_true[true_pos]
 
-            if common_dates.empty:
-                return result
-
-            pred_pos = pred_idx.get_indexer(common_dates)
-            true_pos = true_idx.get_indexer(common_dates)
-
-            X_prop_pred_aligned = X_prop_pred[pred_pos]
-            X_load_pred_aligned = X_load_pred[pred_pos]
-            X_prop_true_aligned = X_prop_true[true_pos]
-            X_load_true_aligned = X_load_true[true_pos]
-
-            prop_mae = np.mean(np.abs(X_prop_true_aligned - X_prop_pred_aligned))
-            prop_rmse = np.sqrt(np.mean((X_prop_true_aligned - X_prop_pred_aligned) ** 2))
-
-            curve_mae = np.mean(np.abs(X_load_true_aligned - X_load_pred_aligned))
-            curve_rmse = np.sqrt(np.mean((X_load_true_aligned - X_load_pred_aligned) ** 2))
-
-            result["prop_metrics"] = {"mae": prop_mae, "rmse": prop_rmse}
-            result["curve_metrics"] = {"mae": curve_mae, "rmse": curve_rmse}
+                    curve_mae = np.mean(np.abs(X_load_true_aligned - X_load_pred_aligned))
+                    curve_rmse = np.sqrt(np.mean((X_load_true_aligned - X_load_pred_aligned) ** 2))
+                    result["curve_metrics"] = {"mae": curve_mae, "rmse": curve_rmse}
 
         return result
 
     def predict_future_curve(self, df_pred, return_long=True):
         df_day_pred = self.prepare_future_data(df_pred)
-
         forecast_ele = self.ele_predict(df_day_pred, return_metrics=False)
 
-        # April 5th special handling
+        # 4月5日特殊处理
         target_date = pd.to_datetime('2026-04-05').normalize()
         date_before = pd.to_datetime('2026-04-04').normalize()
         date_after = pd.to_datetime('2026-04-06').normalize()
 
         forecast_df_indexed = forecast_ele.set_index('ds')
-
-        if target_date in forecast_df_indexed.index and \
-           date_before in forecast_df_indexed.index and \
-           date_after in forecast_df_indexed.index:
-
+        if target_date in forecast_df_indexed.index and date_before in forecast_df_indexed.index and date_after in forecast_df_indexed.index:
             val_before = forecast_df_indexed.loc[date_before, 'yhat']
             val_after = forecast_df_indexed.loc[date_after, 'yhat']
-            averaged_val = (val_before + val_after) / 2
-
-            forecast_df_indexed.loc[target_date, 'yhat'] = averaged_val
+            forecast_df_indexed.loc[target_date, 'yhat'] = (val_before + val_after) / 2
 
         forecast_ele = forecast_df_indexed.reset_index()
-
         df_pc_forecast = self.prop_score_predict(df_day_pred)
 
         self.forecast_ele = forecast_ele
-        result = self.ele_curve_predict(
-            ele_test=df_day_pred,
-            prop_test=None,
-            return_metrics=False
-        )
+        result = self.ele_curve_predict(ele_test=df_day_pred, prop_test=None, return_metrics=False)
 
         result["df_day_pred"] = df_day_pred
         result["forecast_ele"] = forecast_ele
@@ -622,29 +555,11 @@ class EleCurve:
             dates = result["dates"]
             times = result["times"]
 
-            df_curve_pred = pd.DataFrame(
-                result["X_load_pred"],
-                index=dates,
-                columns=times
-            ).reset_index().rename(columns={"index": "date"})
+            df_curve_pred = pd.DataFrame(result["X_load_pred"], index=dates, columns=times).reset_index().rename(columns={"index": "date"})
+            df_curve_pred_long = df_curve_pred.melt(id_vars="date", var_name="time", value_name="ele_pred")
 
-            df_curve_pred_long = df_curve_pred.melt(
-                id_vars="date",
-                var_name="time",
-                value_name="ele_pred"
-            )
-
-            df_prop_pred = pd.DataFrame(
-                result["X_prop_pred"],
-                index=dates,
-                columns=times
-            ).reset_index().rename(columns={"index": "date"})
-
-            df_prop_pred_long = df_prop_pred.melt(
-                id_vars="date",
-                var_name="time",
-                value_name="prop_pred"
-            )
+            df_prop_pred = pd.DataFrame(result["X_prop_pred"], index=dates, columns=times).reset_index().rename(columns={"index": "date"})
+            df_prop_pred_long = df_prop_pred.melt(id_vars="date", var_name="time", value_name="prop_pred")
 
             result["df_curve_pred_wide"] = df_curve_pred
             result["df_curve_pred_long"] = df_curve_pred_long
@@ -655,7 +570,7 @@ class EleCurve:
 
     def split_last_n_days(self, test_days=3):
         if self.df_day is None or self.df_prop is None:
-            raise ValueError("Call prepare_data() first.")
+            raise ValueError("请先调用 prepare_data()")
 
         if test_days is None:
             ele_train = self.df_day.copy()
@@ -663,7 +578,7 @@ class EleCurve:
             return ele_train, prop_train, pd.DataFrame(), pd.DataFrame()
 
         if test_days <= 0:
-            raise ValueError("test_days must be a positive integer or None.")
+            raise ValueError("test_days 必须是正整数或 None")
 
         if len(self.df_day) < test_days:
             test_days = max(1, len(self.df_day) // 5)
@@ -677,23 +592,29 @@ class EleCurve:
         prop_train = self.df_prop[self.df_prop["date"].isin(train_dates)].copy()
         prop_test = self.df_prop[self.df_prop["date"].isin(test_dates)].copy()
 
+        # 保存到实例变量供可视化使用
+        self.ele_train = ele_train
+        self.ele_test = ele_test
+        self.prop_train = prop_train
+        self.prop_test = prop_test
+
         return ele_train, ele_test, prop_train, prop_test
 
 
 # ============================================================
-# Data Processing Functions
+# 数据处理函数
 # ============================================================
 def process_weather_data(uploaded_file):
-    """Process weather data"""
+    """处理天气数据"""
     try:
         df = pd.read_excel(uploaded_file)
         
         if 'record_time' not in df.columns:
-            st.error(f"Weather data missing 'record_time' column! Found: {list(df.columns)}")
+            st.error(f"天气数据缺少 'record_time' 列！实际列名: {list(df.columns)}")
             return None
         
         if 'value' not in df.columns:
-            st.error(f"Weather data missing 'value' column!")
+            st.error(f"天气数据缺少 'value' 列！")
             return None
         
         df['record_time'] = pd.to_datetime(df['record_time'], errors='coerce')
@@ -718,12 +639,12 @@ def process_weather_data(uploaded_file):
         
         return df_15min
     except Exception as e:
-        st.error(f"Error processing weather data: {e}")
+        st.error(f"处理天气数据出错: {e}")
         return None
 
 
 def process_single_day_data(filepath, filename):
-    """Process single customer load file"""
+    """处理单个用户侧用电量文件"""
     date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
     
     if not date_match:
@@ -762,7 +683,7 @@ def process_single_day_data(filepath, filename):
 
 
 def consolidate_customer_data(uploaded_files):
-    """Consolidate all customer load data"""
+    """整合所有用户侧用电量数据"""
     all_data_frames = []
     
     for uploaded_file in uploaded_files:
@@ -795,7 +716,7 @@ def consolidate_customer_data(uploaded_files):
 
 
 def merge_weather_and_customer(weather_df, customer_df):
-    """Merge weather and customer data"""
+    """合并天气和用电数据"""
     weather_df['date_key'] = pd.to_datetime(
         weather_df['date'].str.replace('年', '-').str.replace('月', '-').str.replace('日', ''),
         format='%Y-%m-%d',
@@ -828,7 +749,7 @@ def merge_weather_and_customer(weather_df, customer_df):
 
 
 def create_future_weather(weather_df, customer_df):
-    """Create future weather data"""
+    """创建未来天气数据"""
     weather_df['date_key'] = pd.to_datetime(
         weather_df['date'].str.replace('年', '-').str.replace('月', '-').str.replace('日', ''),
         format='%Y-%m-%d',
@@ -849,22 +770,22 @@ def create_future_weather(weather_df, customer_df):
 
 
 # ============================================================
-# Plotting Functions (English labels)
+# 绘图函数（中文标签）
 # ============================================================
-def plot_daily_forecast(df_apr_day_forecast, start_date=None, end_date=None):
-    """Plot daily load forecast"""
+def plot_daily_forecast(df_forecast, start_date=None, end_date=None, title="日总用电量预测"):
+    """绘制日总负荷预测"""
     fig, ax = plt.subplots(figsize=(12, 5))
     
-    plot_df = df_apr_day_forecast.copy()
+    plot_df = df_forecast.copy()
     plot_df["date"] = pd.to_datetime(plot_df["date"])
     
     if start_date and end_date:
         plot_df = plot_df[(plot_df["date"] >= start_date) & (plot_df["date"] <= end_date)]
     
     ax.plot(plot_df["date"], plot_df["ele_day_pred"], marker="o", linewidth=2, markersize=4, color="#1f77b4")
-    ax.set_xlabel("Date", fontsize=12)
-    ax.set_ylabel("Daily Load (kWh)", fontsize=12)
-    ax.set_title("Daily Load Forecast", fontsize=14)
+    ax.set_xlabel("日期", fontsize=12)
+    ax.set_ylabel("日总用电量 (kWh)", fontsize=12)
+    ax.set_title(title, fontsize=14)
     ax.grid(True, alpha=0.3)
     plt.xticks(rotation=45)
     plt.tight_layout()
@@ -872,8 +793,33 @@ def plot_daily_forecast(df_apr_day_forecast, start_date=None, end_date=None):
     return fig
 
 
-def plot_96point_curve(result, date_str):
-    """Plot 96-point load curve"""
+def plot_validation_daily(ele_train, ele_test, forecast_test):
+    """绘制验证集日总负荷对比"""
+    fig, ax = plt.subplots(figsize=(14, 5))
+    
+    # 训练集
+    ax.plot(ele_train["ds"], ele_train["y"], label="训练集实际值", color="#1f77b4", linewidth=2)
+    
+    # 测试集实际值
+    ax.plot(ele_test["ds"], ele_test["y"], label="测试集实际值", color="#2ca02c", linewidth=2, marker="o", markersize=4)
+    
+    # 测试集预测值
+    forecast_test_aligned = forecast_test.set_index('ds').loc[ele_test["ds"]]
+    ax.plot(ele_test["ds"], forecast_test_aligned["yhat"], label="测试集预测值", color="#ff7f0e", linewidth=2, marker="s", markersize=4, linestyle="--")
+    
+    ax.set_xlabel("日期", fontsize=12)
+    ax.set_ylabel("日总用电量 (kWh)", fontsize=12)
+    ax.set_title("验证集日总负荷预测对比", fontsize=14)
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    
+    return fig
+
+
+def plot_96point_curve(result, date_str, title_prefix="预测负荷曲线"):
+    """绘制96点负荷曲线"""
     fig, ax = plt.subplots(figsize=(12, 5))
     
     times = result["times"]
@@ -886,20 +832,69 @@ def plot_96point_curve(result, date_str):
         date_idx = dates_str.index(date_str)
         dt = dates[date_idx]
         ax.plot(times, X_load_pred[date_idx], marker="o", linestyle="--", linewidth=1.5, markersize=2, color="#ff7f0e")
-        ax.set_xlabel("Time Period (1-96)", fontsize=12)
-        ax.set_ylabel("Load (kWh)", fontsize=12)
-        ax.set_title(f"Load Curve Forecast - {pd.Timestamp(dt).strftime('%Y-%m-%d')}", fontsize=14)
+        ax.set_xlabel("时段 (1-96)", fontsize=12)
+        ax.set_ylabel("负荷 (kWh)", fontsize=12)
+        ax.set_title(f"{title_prefix} - {pd.Timestamp(dt).strftime('%Y-%m-%d')}", fontsize=14)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
     else:
-        ax.text(0.5, 0.5, f"Date {date_str} not in forecast range", 
+        ax.text(0.5, 0.5, f"日期 {date_str} 不在预测范围内", 
                 ha='center', va='center', transform=ax.transAxes, fontsize=14)
     
     return fig
 
 
+def plot_validation_curve_comparison(model, test_date_str):
+    """绘制验证集某一天的96点曲线对比"""
+    fig, ax = plt.subplots(figsize=(12, 5))
+    
+    # 获取测试集曲线结果
+    if model.test_curve_result is None:
+        # 计算测试集曲线预测
+        model.test_curve_result = model.ele_curve_predict(
+            ele_test=model.ele_test,
+            prop_test=model.prop_test,
+            return_metrics=True
+        )
+    
+    result = model.test_curve_result
+    times = result["times"]
+    dates = result["dates"]
+    X_load_pred = result["X_load_pred"]
+    
+    # 获取真实负荷曲线
+    prop_test = model.prop_test
+    curve_mat_test = prop_test.pivot(index="date", columns="time", values="ele")
+    curve_mat_test = curve_mat_test.sort_index(axis=1)
+    
+    dates_str = [pd.Timestamp(d).strftime('%Y-%m-%d') for d in dates]
+    
+    if test_date_str in dates_str:
+        date_idx = dates_str.index(test_date_str)
+        dt = dates[date_idx]
+        
+        # 预测值
+        ax.plot(times, X_load_pred[date_idx], marker="o", linestyle="--", linewidth=1.5, markersize=2, 
+                color="#ff7f0e", label="预测值")
+        
+        # 真实值
+        if dt in curve_mat_test.index:
+            true_curve = curve_mat_test.loc[dt].values
+            ax.plot(times, true_curve, marker="s", linestyle="-", linewidth=1.5, markersize=2, 
+                    color="#2ca02c", label="实际值", alpha=0.7)
+        
+        ax.set_xlabel("时段 (1-96)", fontsize=12)
+        ax.set_ylabel("负荷 (kWh)", fontsize=12)
+        ax.set_title(f"验证集负荷曲线对比 - {pd.Timestamp(dt).strftime('%Y-%m-%d')}", fontsize=14)
+        ax.legend(loc="best")
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+    
+    return fig
+
+
 def to_excel_bytes(df):
-    """Convert DataFrame to Excel bytes"""
+    """将DataFrame转换为Excel字节流"""
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
@@ -907,237 +902,301 @@ def to_excel_bytes(df):
 
 
 # ============================================================
-# Streamlit Main Interface
+# Streamlit 主界面（中文）
 # ============================================================
 def main():
-    st.title("⚡ Shaanxi Power Load Forecast System")
+    st.title("⚡ 陕西电力负荷预测系统")
+    st.markdown(f"*当前使用字体: {used_font}*")
     st.markdown("---")
     
-    # Sidebar - File upload and configuration
+    # 侧边栏 - 文件上传和配置
     with st.sidebar:
-        st.header("📁 Data Upload")
+        st.header("📁 数据上传")
         
         weather_file = st.file_uploader(
-            "Upload Weather Data (weather_hourly_data.xlsx)",
+            "上传天气数据 (weather_hourly_data.xlsx)",
             type=["xlsx"],
             key="weather"
         )
         
         customer_files = st.file_uploader(
-            "Upload Customer Load Data (Multiple files)",
+            "上传用户侧用电量数据 (多个文件)",
             type=["xlsx"],
             accept_multiple_files=True,
             key="customer"
         )
         
         st.markdown("---")
-        st.header("⚙️ Forecast Configuration")
+        st.header("⚙️ 预测配置")
         
         test_days = st.number_input(
-            "Test Days",
+            "测试集天数",
             min_value=3,
             max_value=30,
             value=7,
-            help="Number of historical days for validation"
+            help="用于验证的历史数据天数"
         )
         
         sf_start = st.date_input(
-            "Spring Festival Imputation Start",
+            "春节填充开始日期",
             value=pd.to_datetime("2026-02-09"),
-            help="Start date of Spring Festival holiday to impute"
+            help="需要填充的春节假期开始日期"
         )
         
         sf_end = st.date_input(
-            "Spring Festival Imputation End",
+            "春节填充结束日期",
             value=pd.to_datetime("2026-02-25"),
-            help="End date of Spring Festival holiday to impute"
+            help="需要填充的春节假期结束日期"
         )
         
         predict_start = st.date_input(
-            "Forecast Start Date",
+            "预测起始日期",
             value=pd.to_datetime("2026-04-02"),
-            help="Start date for output forecast results"
+            help="需要输出预测结果的起始日期"
         )
         
         predict_end = st.date_input(
-            "Forecast End Date",
+            "预测结束日期",
             value=pd.to_datetime("2026-04-14"),
-            help="End date for output forecast results"
+            help="需要输出预测结果的结束日期"
         )
         
         st.markdown("---")
         
-        process_btn = st.button("🚀 Start Processing and Forecasting", type="primary", use_container_width=True)
+        process_btn = st.button("🚀 开始处理数据并预测", type="primary", use_container_width=True)
     
-    # Initialize session_state
+    # 初始化session_state
     if 'data_processed' not in st.session_state:
         st.session_state.data_processed = False
     if 'prediction_done' not in st.session_state:
         st.session_state.prediction_done = False
     
-    # Process data and forecast
+    # 处理数据并预测
     if process_btn and weather_file and customer_files:
         try:
-            with st.spinner("Processing data..."):
-                # Process weather data
-                st.info("📊 Step 1/4: Processing weather data...")
+            with st.spinner("正在处理数据..."):
+                # 处理天气数据
+                st.info("📊 步骤1/4: 处理天气数据...")
                 weather_df = process_weather_data(weather_file)
                 if weather_df is None:
-                    st.error("Weather data processing failed")
+                    st.error("天气数据处理失败")
                     return
-                st.success(f"✅ Weather data processed: {len(weather_df)} records")
+                st.success(f"✅ 天气数据处理完成，共 {len(weather_df)} 条记录")
                 
-                # Consolidate customer data
-                st.info("📊 Step 2/4: Processing customer load data...")
+                # 整合用户用电数据
+                st.info("📊 步骤2/4: 整合用户用电数据...")
                 customer_df = consolidate_customer_data(customer_files)
                 if customer_df.empty:
-                    st.error("Customer data processing failed")
+                    st.error("用户用电数据处理失败")
                     return
-                st.success(f"✅ Customer data processed: {len(customer_df)} records")
+                st.success(f"✅ 用户用电数据整合完成，共 {len(customer_df)} 条记录")
                 
-                # Merge data
-                st.info("📊 Step 3/4: Merging historical data...")
+                # 合并数据
+                st.info("📊 步骤3/4: 合并历史数据...")
                 merged_df = merge_weather_and_customer(weather_df, customer_df)
-                st.success(f"✅ Historical data merged: {len(merged_df)} records")
+                st.success(f"✅ 历史数据合并完成，共 {len(merged_df)} 条记录")
                 
-                # Create future weather data
-                st.info("📊 Step 4/4: Preparing future weather data...")
+                # 创建未来天气数据
+                st.info("📊 步骤4/4: 准备未来天气数据...")
                 future_weather_df = create_future_weather(weather_df, customer_df)
-                st.success(f"✅ Future weather prepared: {len(future_weather_df)} records")
+                st.success(f"✅ 未来天气数据准备完成，共 {len(future_weather_df)} 条记录")
                 
                 st.session_state.merged_df = merged_df
                 st.session_state.future_weather_df = future_weather_df
                 
-                # Data preview
+                # 数据预览
                 st.markdown("---")
-                st.subheader("📋 Data Preview")
+                st.subheader("📋 数据预览")
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.write("**Historical Data (Load & Temperature)**")
+                    st.write("**历史数据 (含用电量和温度)**")
                     st.dataframe(merged_df.head(10), use_container_width=True)
                 
                 with col2:
-                    st.write("**Future Weather Data**")
+                    st.write("**未来天气数据**")
                     st.dataframe(future_weather_df.head(10), use_container_width=True)
             
-            # Model training and forecasting
-            with st.spinner("Training model and forecasting..."):
+            # 模型训练和预测
+            with st.spinner("正在训练模型并预测..."):
                 st.markdown("---")
-                st.subheader("🔮 Model Training & Forecast")
+                st.subheader("🔮 模型训练与预测")
                 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # Initialize model
-                status_text.text("Initializing model...")
+                # 初始化模型
+                status_text.text("初始化模型...")
                 progress_bar.progress(10)
                 model = EleCurve()
                 
-                # Prepare data
-                status_text.text("Preparing data...")
+                # 准备数据
+                status_text.text("准备数据...")
                 progress_bar.progress(20)
                 model.prepare_data(merged_df)
                 
-                # Spring Festival imputation
-                status_text.text("Imputing Spring Festival data...")
+                # 春节填充
+                status_text.text("执行春节数据填充...")
                 progress_bar.progress(30)
                 custom_sf_dates = pd.date_range(start=sf_start, end=sf_end)
                 model.perform_sf_imputation(sf_dates_to_impute=custom_sf_dates)
                 
-                # Split data
-                status_text.text("Splitting train/test sets...")
+                # 分割数据
+                status_text.text("分割训练集和测试集...")
                 progress_bar.progress(40)
                 ele_train, ele_test, prop_train, prop_test = model.split_last_n_days(test_days=test_days)
                 
-                # Train daily load model
-                status_text.text("Training daily load model...")
+                # 训练日用电量模型
+                status_text.text("训练日用电量预测模型...")
                 progress_bar.progress(50)
                 model.ele_fit(ele_train)
                 
-                # Evaluate test set
-                status_text.text("Evaluating test set...")
+                # 预测测试集
+                status_text.text("评估测试集...")
                 progress_bar.progress(60)
                 forecast_ele, ele_metrics = model.ele_predict(ele_test)
+                model.test_forecast = forecast_ele  # 保存测试集预测结果
                 
                 # FPCA
-                status_text.text("Performing FPCA analysis...")
+                status_text.text("执行FPCA分析...")
                 progress_bar.progress(70)
                 model.prop_fpca_fit(prop_train)
                 
-                # Train score model
-                status_text.text("Training load curve model...")
+                # 训练分数模型
+                status_text.text("训练负荷曲线模型...")
                 progress_bar.progress(80)
                 model.prop_score_fit(ele_train)
                 
-                # Predict future
-                status_text.text("Forecasting future load...")
+                # 计算测试集曲线预测
+                status_text.text("计算测试集曲线预测...")
+                model.test_curve_result = model.ele_curve_predict(
+                    ele_test=ele_test,
+                    prop_test=prop_test,
+                    return_metrics=True
+                )
+                
+                # 预测未来
+                status_text.text("预测未来负荷...")
                 progress_bar.progress(90)
                 future_result = model.predict_future_curve(future_weather_df, return_long=True)
                 
                 progress_bar.progress(100)
-                status_text.text("Training complete!")
+                status_text.text("训练完成！")
                 
-                # Save results to session_state
+                # 保存结果到session_state
                 st.session_state.model = model
                 st.session_state.future_result = future_result
                 st.session_state.ele_metrics = ele_metrics
+                st.session_state.ele_train = ele_train
+                st.session_state.ele_test = ele_test
+                st.session_state.prop_test = prop_test
+                st.session_state.forecast_ele = forecast_ele
                 st.session_state.prediction_done = True
                 
-                # Prepare daily forecast data
+                # 准备日总预测数据
                 df_apr_day_forecast = future_result["forecast_ele"][["ds", "yhat"]].copy()
                 df_apr_day_forecast.rename(columns={"ds": "date", "yhat": "ele_day_pred"}, inplace=True)
                 st.session_state.df_apr_day_forecast = df_apr_day_forecast
                 
-                # Display evaluation metrics
-                st.success("✅ Model training complete!")
+                # 显示评估指标
+                st.success("✅ 模型训练完成！")
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric("MAE", f"{ele_metrics['mae']:.2f}")
+                    st.metric("日总 MAE", f"{ele_metrics['mae']:.2f}")
                 with col2:
-                    st.metric("RMSE", f"{ele_metrics['rmse']:.2f}")
+                    st.metric("日总 RMSE", f"{ele_metrics['rmse']:.2f}")
                 with col3:
-                    st.metric("MAPE", f"{ele_metrics['mape']*100:.2f}%")
+                    st.metric("日总 MAPE", f"{ele_metrics['mape']*100:.2f}%")
+                with col4:
+                    if model.test_curve_result and "curve_metrics" in model.test_curve_result:
+                        st.metric("曲线 MAE", f"{model.test_curve_result['curve_metrics']['mae']:.2f}")
         
         except Exception as e:
-            st.error(f"Error during processing: {e}")
+            st.error(f"处理过程中出错: {e}")
             import traceback
             st.code(traceback.format_exc())
     
     elif process_btn:
-        st.error("Please upload all required data files!")
+        st.error("请先上传所有必需的数据文件！")
     
-    # Display forecast results
+    # 显示验证集结果
     if st.session_state.prediction_done:
         st.markdown("---")
-        st.subheader("📈 Forecast Results")
+        st.subheader("📊 验证集评估结果")
+        
+        model = st.session_state.model
+        ele_train = st.session_state.ele_train
+        ele_test = st.session_state.ele_test
+        forecast_ele = st.session_state.forecast_ele
+        prop_test = st.session_state.prop_test
+        
+        # 日总负荷对比图
+        st.markdown("#### 日总负荷预测对比")
+        fig_val = plot_validation_daily(ele_train, ele_test, forecast_ele)
+        st.pyplot(fig_val)
+        plt.close(fig_val)
+        
+        # 96点曲线对比
+        st.markdown("#### 96点负荷曲线对比")
+        
+        # 获取测试集日期
+        test_dates = ele_test["ds"].dt.strftime('%Y-%m-%d').tolist()
+        
+        if len(test_dates) > 0:
+            selected_test_date = st.selectbox(
+                "选择测试集日期查看96点曲线对比",
+                options=test_dates
+            )
+            
+            fig_val_curve = plot_validation_curve_comparison(model, selected_test_date)
+            st.pyplot(fig_val_curve)
+            plt.close(fig_val_curve)
+        else:
+            st.warning("没有可用的测试集日期")
+        
+        # 测试集数据表格
+        st.markdown("#### 测试集日总负荷数据")
+        test_comparison = pd.DataFrame({
+            "日期": ele_test["ds"].dt.strftime('%Y-%m-%d'),
+            "实际值": ele_test["y"].values,
+            "预测值": forecast_ele.set_index('ds').loc[ele_test["ds"]]["yhat"].values
+        })
+        test_comparison["误差"] = test_comparison["预测值"] - test_comparison["实际值"]
+        test_comparison["误差率(%)"] = (test_comparison["误差"] / test_comparison["实际值"] * 100).round(2)
+        st.dataframe(test_comparison, use_container_width=True)
+    
+    # 显示预测结果
+    if st.session_state.prediction_done:
+        st.markdown("---")
+        st.subheader("📈 未来负荷预测结果")
         
         future_result = st.session_state.future_result
         df_apr_day_forecast = st.session_state.df_apr_day_forecast
         
-        # Filter by date range
+        # 筛选指定日期范围
         df_apr_day_forecast["date"] = pd.to_datetime(df_apr_day_forecast["date"])
         mask = (df_apr_day_forecast["date"] >= pd.to_datetime(predict_start)) & \
                (df_apr_day_forecast["date"] <= pd.to_datetime(predict_end))
         df_filtered = df_apr_day_forecast[mask]
         
-        # Calculate total
+        # 计算总量
         month_total = df_filtered["ele_day_pred"].sum()
         
         st.metric(
-            f"📅 {predict_start.strftime('%Y-%m-%d')} to {predict_end.strftime('%Y-%m-%d')} Total Load Forecast",
+            f"📅 {predict_start.strftime('%Y-%m-%d')} 至 {predict_end.strftime('%Y-%m-%d')} 总用电量预测",
             f"{month_total:,.2f} kWh"
         )
         
-        # Daily load forecast plot
-        st.markdown("#### Daily Load Forecast")
-        fig1 = plot_daily_forecast(df_apr_day_forecast, pd.to_datetime(predict_start), pd.to_datetime(predict_end))
+        # 日总负荷预测图
+        st.markdown("#### 日总用电量预测")
+        fig1 = plot_daily_forecast(df_apr_day_forecast, pd.to_datetime(predict_start), pd.to_datetime(predict_end), 
+                                   title="未来日总用电量预测")
         st.pyplot(fig1)
         plt.close(fig1)
         
-        # 96-point curve
-        st.markdown("#### 96-Point Load Curve Forecast")
+        # 96点曲线
+        st.markdown("#### 96点负荷曲线预测")
         
         curve_dates = future_result["df_curve_pred_wide"]["date"].unique()
         curve_dates_filtered = []
@@ -1148,32 +1207,33 @@ def main():
         
         if len(curve_dates_filtered) > 0:
             selected_date = st.selectbox(
-                "Select date to view 96-point load curve",
-                options=curve_dates_filtered
+                "选择日期查看未来96点负荷曲线",
+                options=curve_dates_filtered,
+                key="future_curve_select"
             )
             
-            fig2 = plot_96point_curve(future_result, selected_date)
+            fig2 = plot_96point_curve(future_result, selected_date, title_prefix="未来负荷曲线预测")
             st.pyplot(fig2)
             plt.close(fig2)
         else:
-            st.warning("No forecast dates available")
+            st.warning("没有可用的预测日期")
         
-        # Data table
-        st.markdown("#### Daily Load Forecast Data")
+        # 数据表格
+        st.markdown("#### 日总用电量预测数据")
         st.dataframe(df_filtered, use_container_width=True)
         
-        # Download buttons
+        # 下载按钮
         st.markdown("---")
-        st.subheader("📥 Download Forecast Results")
+        st.subheader("📥 下载预测结果")
         
         col1, col2, col3 = st.columns(3)
         
         with col1:
             excel_bytes = to_excel_bytes(df_filtered)
             st.download_button(
-                label="📊 Download Daily Forecast",
+                label="📊 下载日总预测",
                 data=excel_bytes,
-                file_name=f"daily_forecast_{predict_start}_{predict_end}.xlsx",
+                file_name=f"日总预测_{predict_start}_{predict_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
@@ -1186,9 +1246,9 @@ def main():
             ]
             excel_bytes2 = to_excel_bytes(df_curve_filtered)
             st.download_button(
-                label="📈 Download 96-Point Curve (Wide)",
+                label="📈 下载96点曲线(宽表)",
                 data=excel_bytes2,
-                file_name=f"curve_96_wide_{predict_start}_{predict_end}.xlsx",
+                file_name=f"96点曲线_宽表_{predict_start}_{predict_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
@@ -1201,25 +1261,36 @@ def main():
             ]
             excel_bytes3 = to_excel_bytes(df_curve_long_filtered)
             st.download_button(
-                label="📋 Download 96-Point Curve (Long)",
+                label="📋 下载96点曲线(长表)",
                 data=excel_bytes3,
-                file_name=f"curve_96_long_{predict_start}_{predict_end}.xlsx",
+                file_name=f"96点曲线_长表_{predict_start}_{predict_end}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
-        # Complete results ZIP
+        # 完整结果打包下载
         zip_buffer = BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"daily_forecast_{predict_start}_{predict_end}.xlsx", excel_bytes)
-            zf.writestr("curve_96_wide_full.xlsx", to_excel_bytes(future_result["df_curve_pred_wide"]))
-            zf.writestr("curve_96_long_full.xlsx", to_excel_bytes(future_result["df_curve_pred_long"]))
-            zf.writestr("prop_curve_wide.xlsx", to_excel_bytes(future_result["df_prop_pred_wide"]))
-            zf.writestr("daily_forecast_full.xlsx", to_excel_bytes(df_apr_day_forecast))
+            zf.writestr(f"日总预测_{predict_start}_{predict_end}.xlsx", excel_bytes)
+            zf.writestr("96点曲线_宽表_完整.xlsx", to_excel_bytes(future_result["df_curve_pred_wide"]))
+            zf.writestr("96点曲线_长表_完整.xlsx", to_excel_bytes(future_result["df_curve_pred_long"]))
+            zf.writestr("比例曲线_宽表.xlsx", to_excel_bytes(future_result["df_prop_pred_wide"]))
+            zf.writestr("日总预测_完整.xlsx", to_excel_bytes(df_apr_day_forecast))
+            
+            # 添加测试集对比数据
+            if 'ele_test' in st.session_state:
+                test_comparison = pd.DataFrame({
+                    "日期": st.session_state.ele_test["ds"].dt.strftime('%Y-%m-%d'),
+                    "实际值": st.session_state.ele_test["y"].values,
+                    "预测值": st.session_state.forecast_ele.set_index('ds').loc[st.session_state.ele_test["ds"]]["yhat"].values
+                })
+                test_comparison["误差"] = test_comparison["预测值"] - test_comparison["实际值"]
+                test_comparison["误差率(%)"] = (test_comparison["误差"] / test_comparison["实际值"] * 100).round(2)
+                zf.writestr("测试集对比结果.xlsx", to_excel_bytes(test_comparison))
         
         st.download_button(
-            label="📦 Download All Results (ZIP)",
+            label="📦 下载所有预测结果 (ZIP)",
             data=zip_buffer.getvalue(),
-            file_name="load_prediction_results.zip",
+            file_name="负荷预测结果.zip",
             mime="application/zip",
             use_container_width=True
         )
