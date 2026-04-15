@@ -718,7 +718,8 @@ def process_weather_data(uploaded_file):
         df = df.sort_values('record_time')
         
         df = df.set_index('record_time')
-        df_15min = df.resample('15T').interpolate(method='time')
+        # 修正：'15T' 改为 '15min' 以兼容新版 pandas
+        df_15min = df.resample('15min').interpolate(method='time')
         df_15min = df_15min.reset_index()
         
         df_15min['date'] = (
@@ -956,7 +957,7 @@ def main():
             "测试集天数",
             min_value=3,
             max_value=30,
-            value=5,
+            value=5,  # 修改为默认5天
             help="用于验证的历史数据天数"
         )
         
