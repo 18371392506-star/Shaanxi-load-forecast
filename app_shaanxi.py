@@ -134,14 +134,10 @@ class EleCurve:
         self.X_load_pred = None
 
     def _parse_date_series(self, s: pd.Series) -> pd.Series:
-        """安全解析日期序列，兼容 pandas StringDtype"""
-        # 如果已经是 datetime 类型，直接返回
-        if pd.api.types.is_datetime64_any_dtype(s):
+        if np.issubdtype(s.dtype, np.datetime64):
             return s
-        # 如果是数值类型（例如 Excel 序列号）
-        if pd.api.types.is_numeric_dtype(s):
+        if np.issubdtype(s.dtype, np.number):
             return pd.to_datetime(s, unit="D", origin="1899-12-30", errors="coerce")
-        # 否则视为字符串处理
         s_str = s.astype(str)
         dt_ch = pd.to_datetime(s_str, format=self.date_format, errors="coerce")
         mask_fail = dt_ch.isna()
@@ -722,7 +718,7 @@ def process_weather_data(uploaded_file):
         df = df.sort_values('record_time')
         
         df = df.set_index('record_time')
-        df_15min = df.resample('15min').interpolate(method='time')
+        df_15min = df.resample('15T').interpolate(method='time')
         df_15min = df_15min.reset_index()
         
         df_15min['date'] = (
@@ -960,7 +956,7 @@ def main():
             "测试集天数",
             min_value=3,
             max_value=30,
-            value=5,
+            value=7,
             help="用于验证的历史数据天数"
         )
         
@@ -1044,52 +1040,76 @@ def main():
                     st.write("**未来天气数据**")
                     st.dataframe(future_weather_df.head(10), use_container_width=True)
             
-            # ==================== 阶段一：模型评估（仅用于展示指标，不影响最终预测） ====================
-            with st.spinner("正在评估模型性能（使用测试集）..."):
+            # 模型训练和预测
+            with st.spinner("正在训练模型并预测..."):
                 st.markdown("---")
-                st.subheader("📊 模型性能评估")
+                st.subheader("🔮 模型训练与预测")
                 
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # 初始化临时模型用于评估
-                status_text.text("初始化评估模型...")
+                # 初始化模型
+                status_text.text("初始化模型...")
                 progress_bar.progress(10)
-                eval_model = EleCurve()
-                eval_model.prepare_data(merged_df)
+                model = EleCurve()
                 
-                # 春节填充（与最终预测使用相同的填充范围）
-                status_text.text("执行春节数据填充（评估模型）...")
+                # 准备数据
+                status_text.text("准备数据...")
                 progress_bar.progress(20)
-                custom_sf_dates = pd.date_range(start=sf_start, end=sf_end)
-                eval_model.perform_sf_imputation(sf_dates_to_impute=custom_sf_dates)
+                model.prepare_data(merged_df)
                 
-                # 分割训练/测试集
-                status_text.text("分割训练集和测试集...")
+                # 春节填充
+                status_text.text("执行春节数据填充...")
                 progress_bar.progress(30)
-                ele_train, ele_test, prop_train, prop_test = eval_model.split_last_n_days(test_days=test_days)
+                custom_sf_dates = pd.date_range(start=sf_start, end=sf_end)
+                model.perform_sf_imputation(sf_dates_to_impute=custom_sf_dates)
+                
+                # 分割数据
+                status_text.text("分割训练集和测试集...")
+                progress_bar.progress(40)
+                ele_train, ele_test, prop_train, prop_test = model.split_last_n_days(test_days=test_days)
                 
                 # 训练日用电量模型
                 status_text.text("训练日用电量预测模型...")
                 progress_bar.progress(50)
-                eval_model.ele_fit(ele_train)
+                model.ele_fit(ele_train)
                 
-                # 评估测试集
+                # 预测测试集
                 status_text.text("评估测试集...")
-                progress_bar.progress(70)
-                forecast_ele, ele_metrics = eval_model.ele_predict(ele_test)
+                progress_bar.progress(60)
+                forecast_ele, ele_metrics = model.ele_predict(ele_test)
                 
-                # FPCA 与分数模型训练
-                status_text.text("执行 FPCA 分析...")
+                # FPCA
+                status_text.text("执行FPCA分析...")
+                progress_bar.progress(70)
+                model.prop_fpca_fit(prop_train)
+                
+                # 训练分数模型
+                status_text.text("训练负荷曲线模型...")
                 progress_bar.progress(80)
-                eval_model.prop_fpca_fit(prop_train)
-                eval_model.prop_score_fit(ele_train)
+                model.prop_score_fit(ele_train)
+                
+                # 预测未来
+                status_text.text("预测未来负荷...")
+                progress_bar.progress(90)
+                future_result = model.predict_future_curve(future_weather_df, return_long=True)
                 
                 progress_bar.progress(100)
-                status_text.text("评估完成！")
+                status_text.text("训练完成！")
+                
+                # 保存结果到session_state
+                st.session_state.model = model
+                st.session_state.future_result = future_result
+                st.session_state.ele_metrics = ele_metrics
+                st.session_state.prediction_done = True
+                
+                # 准备日总预测数据
+                df_apr_day_forecast = future_result["forecast_ele"][["ds", "yhat"]].copy()
+                df_apr_day_forecast.rename(columns={"ds": "date", "yhat": "ele_day_pred"}, inplace=True)
+                st.session_state.df_apr_day_forecast = df_apr_day_forecast
                 
                 # 显示评估指标
-                st.success("✅ 模型评估完成！")
+                st.success("✅ 模型训练完成！")
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
@@ -1098,61 +1118,6 @@ def main():
                     st.metric("RMSE (均方根误差)", f"{ele_metrics['rmse']:.2f}")
                 with col3:
                     st.metric("MAPE (平均绝对百分比误差)", f"{ele_metrics['mape']*100:.2f}%")
-                
-                # 保存评估指标供后续显示
-                st.session_state.ele_metrics = ele_metrics
-            
-            # ==================== 阶段二：未来预测（使用全部历史数据重新训练） ====================
-            with st.spinner("正在训练最终预测模型（使用全部历史数据）..."):
-                st.markdown("---")
-                st.subheader("🔮 未来负荷预测")
-                
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # 初始化最终模型
-                status_text.text("初始化最终模型...")
-                progress_bar.progress(10)
-                final_model = EleCurve()
-                final_model.prepare_data(merged_df)
-                
-                # 春节填充（与评估模型使用相同填充范围）
-                status_text.text("执行春节数据填充（最终模型）...")
-                progress_bar.progress(20)
-                final_model.perform_sf_imputation(sf_dates_to_impute=custom_sf_dates)
-                
-                # 使用全部数据训练
-                status_text.text("使用全部历史数据训练日用电量模型...")
-                progress_bar.progress(50)
-                final_model.ele_fit(final_model.df_day)  # df_day 是完整数据
-                
-                status_text.text("执行 FPCA 分析（全部历史数据）...")
-                progress_bar.progress(70)
-                final_model.prop_fpca_fit(final_model.df_prop)  # df_prop 是完整数据
-                
-                status_text.text("训练负荷曲线模型（全部历史数据）...")
-                progress_bar.progress(80)
-                final_model.prop_score_fit(final_model.df_day)  # 使用完整日数据
-                
-                # 预测未来
-                status_text.text("预测未来负荷...")
-                progress_bar.progress(90)
-                future_result = final_model.predict_future_curve(future_weather_df, return_long=True)
-                
-                progress_bar.progress(100)
-                status_text.text("预测完成！")
-                
-                # 保存最终预测结果到 session_state
-                st.session_state.model = final_model
-                st.session_state.future_result = future_result
-                st.session_state.prediction_done = True
-                
-                # 准备日总预测数据
-                df_apr_day_forecast = future_result["forecast_ele"][["ds", "yhat"]].copy()
-                df_apr_day_forecast.rename(columns={"ds": "date", "yhat": "ele_day_pred"}, inplace=True)
-                st.session_state.df_apr_day_forecast = df_apr_day_forecast
-                
-                st.success("✅ 最终预测模型训练完成（已使用全部历史数据）！")
         
         except Exception as e:
             st.error(f"处理过程中出错: {e}")
