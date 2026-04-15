@@ -134,20 +134,18 @@ class EleCurve:
         self.X_load_pred = None
 
     def _parse_date_series(self, s: pd.Series) -> pd.Series:
-        """将日期序列转换为 datetime64，兼容 Pandas StringDtype"""
+        """安全解析日期序列，兼容 pandas StringDtype"""
         # 如果已经是 datetime 类型，直接返回
         if pd.api.types.is_datetime64_any_dtype(s):
             return s
-        # 如果是数值型（Excel 序列号），转换
-        if np.issubdtype(s.dtype, np.number):
+        # 如果是数值类型（例如 Excel 序列号）
+        if pd.api.types.is_numeric_dtype(s):
             return pd.to_datetime(s, unit="D", origin="1899-12-30", errors="coerce")
-        # 否则转为字符串处理
+        # 否则视为字符串处理
         s_str = s.astype(str)
-        # 尝试按中文格式解析
         dt_ch = pd.to_datetime(s_str, format=self.date_format, errors="coerce")
         mask_fail = dt_ch.isna()
         if mask_fail.any():
-            # 对失败的尝试斜杠格式
             dt_slash = pd.to_datetime(s_str[mask_fail], format="%Y/%m/%d", errors="coerce")
             dt_ch[mask_fail] = dt_slash
         return dt_ch
@@ -724,7 +722,6 @@ def process_weather_data(uploaded_file):
         df = df.sort_values('record_time')
         
         df = df.set_index('record_time')
-        # 修改为 '15min' 避免 'T' 别名错误
         df_15min = df.resample('15min').interpolate(method='time')
         df_15min = df_15min.reset_index()
         
@@ -963,7 +960,7 @@ def main():
             "测试集天数",
             min_value=3,
             max_value=30,
-            value=5,  # 默认改为 5 天
+            value=5,
             help="用于验证的历史数据天数"
         )
         
