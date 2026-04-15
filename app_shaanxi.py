@@ -937,7 +937,7 @@ def main():
             "测试集天数",
             min_value=3,
             max_value=30,
-            value=7,
+            value=5,
             help="用于验证的历史数据天数"
         )
         
