@@ -374,6 +374,8 @@ class EleCurve:
 
 
 
+from sklearn.decomposition import PCA  # 在文件顶部导入
+
 def prop_fpca_fit(self, prop_train, plot=False):
     curve_mat_train = prop_train.pivot(index="date", columns="time", values="ele_prop")
     curve_mat_train = curve_mat_train.sort_index(axis=1)
@@ -387,7 +389,6 @@ def prop_fpca_fit(self, prop_train, plot=False):
     pca = PCA(n_components=n_comp_init)
     pca.fit(X_train_prop)
 
-    # 根据解释方差比例选择主成分数
     cum_ratio = np.cumsum(pca.explained_variance_ratio_)
     k = np.argmax(cum_ratio >= self.fpca_var_threshold) + 1
     if k == 0 and len(cum_ratio) > 0:
@@ -397,22 +398,21 @@ def prop_fpca_fit(self, prop_train, plot=False):
     if k == 0:
         raise ValueError("PCA 无法确定组件数量")
 
-    # 重新用选定的 k 拟合 PCA
+    # 用选定的 k 重新拟合
     pca = PCA(n_components=k)
     scores_train = pca.fit_transform(X_train_prop)
 
-    # 存储结果（与原 FPCA 接口保持一致）
     df_scores = pd.DataFrame(
         scores_train,
         index=curve_mat_train.index,
         columns=[f"PC{i+1}" for i in range(scores_train.shape[1])]
     ).reset_index()
 
-    self.fpca = pca  # 这里用 pca 对象代替原来的 fpca，但后续不会直接使用
+    self.fpca = pca
     self.curve_mat_train = curve_mat_train
     self.grid_points = grid_points
-    self.mean_func = pca.mean_  # 形状 (n_grid_points,)
-    self.components = pca.components_  # 形状 (k, n_grid_points)
+    self.mean_func = pca.mean_          # 形状 (n_grid_points,)
+    self.components = pca.components_   # 形状 (k, n_grid_points)
     self.df_scores = df_scores
     self.pc_cols = [c for c in df_scores.columns if c.startswith("PC")]
     self.k = k
