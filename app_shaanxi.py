@@ -5,8 +5,6 @@ import os
 import re
 import tempfile
 from prophet import Prophet
-import skfda
-from skfda.preprocessing.dim_reduction import FPCA
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error
@@ -16,6 +14,7 @@ import holidays
 from io import BytesIO
 import zipfile
 import platform
+from sklearn.decomposition import PCA
 
 # ============================================================
 # 字体设置
@@ -373,56 +372,52 @@ class EleCurve:
 
         return forecast
 
-    def prop_fpca_fit(self, prop_train, plot=False):
-        curve_mat_train = prop_train.pivot(index="date", columns="time", values="ele_prop")
-        curve_mat_train = curve_mat_train.sort_index(axis=1)
-        curve_mat_train = curve_mat_train.dropna(axis=0).copy()
 
-        X_train_prop = curve_mat_train.to_numpy()
-        grid_points = curve_mat_train.columns.to_numpy()
 
-        fd_train = skfda.FDataGrid(data_matrix=X_train_prop, grid_points=grid_points)
+def prop_fpca_fit(self, prop_train, plot=False):
+    curve_mat_train = prop_train.pivot(index="date", columns="time", values="ele_prop")
+    curve_mat_train = curve_mat_train.sort_index(axis=1)
+    curve_mat_train = curve_mat_train.dropna(axis=0).copy()
 
-        n_comp_init = min(self.fpca_max_components, X_train_prop.shape[0], X_train_prop.shape[1])
-        fpca_tmp = FPCA(n_components=n_comp_init)
-        fpca_tmp.fit(fd_train)
+    X_train_prop = curve_mat_train.to_numpy()
+    grid_points = curve_mat_train.columns.to_numpy()
 
-        cum_ratio = np.cumsum(fpca_tmp.explained_variance_ratio_)
-        k = np.argmax(cum_ratio >= self.fpca_var_threshold) + 1
-        if k == 0 and len(cum_ratio) > 0: k = 1
-        if k == 0 and n_comp_init > 0: k = n_comp_init
-        if k == 0:
-            raise ValueError("FPCA 无法确定组件数量")
+    # 使用 PCA 替代 FPCA
+    n_comp_init = min(self.fpca_max_components, X_train_prop.shape[0], X_train_prop.shape[1])
+    pca = PCA(n_components=n_comp_init)
+    pca.fit(X_train_prop)
 
-        fpca = FPCA(n_components=k)
-        fpca.fit(fd_train)
+    # 根据解释方差比例选择主成分数
+    cum_ratio = np.cumsum(pca.explained_variance_ratio_)
+    k = np.argmax(cum_ratio >= self.fpca_var_threshold) + 1
+    if k == 0 and len(cum_ratio) > 0:
+        k = 1
+    if k == 0 and n_comp_init > 0:
+        k = n_comp_init
+    if k == 0:
+        raise ValueError("PCA 无法确定组件数量")
 
-        scores_train = fpca.transform(fd_train)
-        df_scores = pd.DataFrame(
-            scores_train,
-            index=curve_mat_train.index,
-            columns=[f"PC{i+1}" for i in range(scores_train.shape[1])]
-        ).reset_index()
+    # 重新用选定的 k 拟合 PCA
+    pca = PCA(n_components=k)
+    scores_train = pca.fit_transform(X_train_prop)
 
-        mean_func = fpca.mean_.data_matrix
-        if mean_func.ndim == 2:
-            mean_func = mean_func[..., 0]
-        mean_func = np.asarray(mean_func).reshape(-1)
+    # 存储结果（与原 FPCA 接口保持一致）
+    df_scores = pd.DataFrame(
+        scores_train,
+        index=curve_mat_train.index,
+        columns=[f"PC{i+1}" for i in range(scores_train.shape[1])]
+    ).reset_index()
 
-        components = fpca.components_.data_matrix
-        if components.ndim == 3:
-            components = components[..., 0]
+    self.fpca = pca  # 这里用 pca 对象代替原来的 fpca，但后续不会直接使用
+    self.curve_mat_train = curve_mat_train
+    self.grid_points = grid_points
+    self.mean_func = pca.mean_  # 形状 (n_grid_points,)
+    self.components = pca.components_  # 形状 (k, n_grid_points)
+    self.df_scores = df_scores
+    self.pc_cols = [c for c in df_scores.columns if c.startswith("PC")]
+    self.k = k
 
-        self.fpca = fpca
-        self.curve_mat_train = curve_mat_train
-        self.grid_points = grid_points
-        self.mean_func = mean_func
-        self.components = components
-        self.df_scores = df_scores
-        self.pc_cols = [c for c in df_scores.columns if c.startswith("PC")]
-        self.k = k
-
-        return {"fpca": fpca, "k": k, "cum_ratio": cum_ratio, "df_scores": df_scores}
+    return {"fpca": pca, "k": k, "cum_ratio": cum_ratio, "df_scores": df_scores}
 
     def prop_score_fit(self, ele_train):
         if self.df_scores is None:
