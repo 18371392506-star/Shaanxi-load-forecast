@@ -373,8 +373,7 @@ class EleCurve:
         return forecast
 
 
-
-from sklearn.decomposition import PCA  # 在文件顶部导入
+from sklearn.decomposition import PCA
 
 def prop_fpca_fit(self, prop_train, plot=False):
     curve_mat_train = prop_train.pivot(index="date", columns="time", values="ele_prop")
@@ -418,27 +417,6 @@ def prop_fpca_fit(self, prop_train, plot=False):
     self.k = k
 
     return {"fpca": pca, "k": k, "cum_ratio": cum_ratio, "df_scores": df_scores}
-
-    def prop_score_fit(self, ele_train):
-        if self.df_scores is None:
-            raise ValueError("请先调用 prop_fpca_fit()")
-
-        df_pc_model = self.df_scores.merge(
-            ele_train[["ds"] + [f for f in self.features if f in ele_train.columns]].rename(columns={"ds": "date"}),
-            on="date", how="left"
-        ).sort_values("date").reset_index(drop=True)
-
-        df_pc_model.dropna(subset=self.features, inplace=True)
-        X_pc_train = df_pc_model[self.features]
-        Y_pc_train = df_pc_model[self.pc_cols]
-
-        if X_pc_train.empty or Y_pc_train.empty:
-            raise ValueError("没有有效数据训练 FPCA 分数模型")
-
-        model_score = MultiOutputRegressor(self.score_model_base)
-        model_score.fit(X_pc_train, Y_pc_train)
-        self.model_score = model_score
-        return self
 
     def prop_score_predict(self, ele_test):
         if self.model_score is None:
