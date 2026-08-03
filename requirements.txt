@@ -6,5 +6,3 @@ prophet==1.1.5
 scikit-learn==1.2.2
 matplotlib==3.7.1
 holidays==0.28
-scikit-fda==0.2.0
-multimethod==1.9.1
