@@ -42,7 +42,7 @@ st.set_page_config(
 )
 
 # ============================================================
-# EleCurve 类（完整版）
+# EleCurve 类（完整版，已替换 FPCA 为 PCA）
 # ============================================================
 class EleCurve:
 
@@ -372,51 +372,74 @@ class EleCurve:
 
         return forecast
 
+    # =================================================================
+    # 以下两个方法替换了原来的 FPCA 相关逻辑，使用 sklearn.decomposition.PCA
+    # =================================================================
+    def prop_fpca_fit(self, prop_train, plot=False):
+        """使用 PCA 替代 FPCA 对负荷曲线进行降维"""
+        curve_mat_train = prop_train.pivot(index="date", columns="time", values="ele_prop")
+        curve_mat_train = curve_mat_train.sort_index(axis=1)
+        curve_mat_train = curve_mat_train.dropna(axis=0).copy()
 
-from sklearn.decomposition import PCA
+        X_train_prop = curve_mat_train.to_numpy()
+        grid_points = curve_mat_train.columns.to_numpy()
 
-def prop_fpca_fit(self, prop_train, plot=False):
-    curve_mat_train = prop_train.pivot(index="date", columns="time", values="ele_prop")
-    curve_mat_train = curve_mat_train.sort_index(axis=1)
-    curve_mat_train = curve_mat_train.dropna(axis=0).copy()
+        # 使用 PCA 替代 FPCA
+        n_comp_init = min(self.fpca_max_components, X_train_prop.shape[0], X_train_prop.shape[1])
+        pca = PCA(n_components=n_comp_init)
+        pca.fit(X_train_prop)
 
-    X_train_prop = curve_mat_train.to_numpy()
-    grid_points = curve_mat_train.columns.to_numpy()
+        cum_ratio = np.cumsum(pca.explained_variance_ratio_)
+        k = np.argmax(cum_ratio >= self.fpca_var_threshold) + 1
+        if k == 0 and len(cum_ratio) > 0:
+            k = 1
+        if k == 0 and n_comp_init > 0:
+            k = n_comp_init
+        if k == 0:
+            raise ValueError("PCA 无法确定组件数量")
 
-    # 使用 PCA 替代 FPCA
-    n_comp_init = min(self.fpca_max_components, X_train_prop.shape[0], X_train_prop.shape[1])
-    pca = PCA(n_components=n_comp_init)
-    pca.fit(X_train_prop)
+        # 用选定的 k 重新拟合
+        pca = PCA(n_components=k)
+        scores_train = pca.fit_transform(X_train_prop)
 
-    cum_ratio = np.cumsum(pca.explained_variance_ratio_)
-    k = np.argmax(cum_ratio >= self.fpca_var_threshold) + 1
-    if k == 0 and len(cum_ratio) > 0:
-        k = 1
-    if k == 0 and n_comp_init > 0:
-        k = n_comp_init
-    if k == 0:
-        raise ValueError("PCA 无法确定组件数量")
+        df_scores = pd.DataFrame(
+            scores_train,
+            index=curve_mat_train.index,
+            columns=[f"PC{i+1}" for i in range(scores_train.shape[1])]
+        ).reset_index()
 
-    # 用选定的 k 重新拟合
-    pca = PCA(n_components=k)
-    scores_train = pca.fit_transform(X_train_prop)
+        self.fpca = pca
+        self.curve_mat_train = curve_mat_train
+        self.grid_points = grid_points
+        self.mean_func = pca.mean_          # 形状 (n_grid_points,)
+        self.components = pca.components_   # 形状 (k, n_grid_points)
+        self.df_scores = df_scores
+        self.pc_cols = [c for c in df_scores.columns if c.startswith("PC")]
+        self.k = k
 
-    df_scores = pd.DataFrame(
-        scores_train,
-        index=curve_mat_train.index,
-        columns=[f"PC{i+1}" for i in range(scores_train.shape[1])]
-    ).reset_index()
+        return {"fpca": pca, "k": k, "cum_ratio": cum_ratio, "df_scores": df_scores}
 
-    self.fpca = pca
-    self.curve_mat_train = curve_mat_train
-    self.grid_points = grid_points
-    self.mean_func = pca.mean_          # 形状 (n_grid_points,)
-    self.components = pca.components_   # 形状 (k, n_grid_points)
-    self.df_scores = df_scores
-    self.pc_cols = [c for c in df_scores.columns if c.startswith("PC")]
-    self.k = k
+    def prop_score_fit(self, ele_train):
+        """训练主成分得分预测模型"""
+        if self.df_scores is None:
+            raise ValueError("请先调用 prop_fpca_fit()")
 
-    return {"fpca": pca, "k": k, "cum_ratio": cum_ratio, "df_scores": df_scores}
+        df_pc_model = self.df_scores.merge(
+            ele_train[["ds"] + [f for f in self.features if f in ele_train.columns]].rename(columns={"ds": "date"}),
+            on="date", how="left"
+        ).sort_values("date").reset_index(drop=True)
+
+        df_pc_model.dropna(subset=self.features, inplace=True)
+        X_pc_train = df_pc_model[self.features]
+        Y_pc_train = df_pc_model[self.pc_cols]
+
+        if X_pc_train.empty or Y_pc_train.empty:
+            raise ValueError("没有有效数据训练 FPCA 分数模型")
+
+        model_score = MultiOutputRegressor(self.score_model_base)
+        model_score.fit(X_pc_train, Y_pc_train)
+        self.model_score = model_score
+        return self
 
     def prop_score_predict(self, ele_test):
         if self.model_score is None:
@@ -442,7 +465,7 @@ def prop_fpca_fit(self, prop_train, plot=False):
         if self.df_pc_forecast is None:
             self.prop_score_predict(ele_test)
         if self.components is None or self.mean_func is None:
-            raise ValueError("FPCA 组件未初始化")
+            raise ValueError("PCA 组件未初始化")
 
         common_ds = pd.Index(self.forecast_ele['ds'].dt.normalize()).intersection(
             pd.Index(self.df_pc_forecast.index.normalize())
@@ -1034,8 +1057,8 @@ def main():
                 forecast_ele, ele_metrics = model.ele_predict(ele_test)
                 model.test_forecast = forecast_ele
                 
-                # FPCA
-                status_text.text("执行FPCA分析...")
+                # FPCA -> PCA
+                status_text.text("执行PCA分析...")
                 progress_bar.progress(70)
                 model.prop_fpca_fit(prop_train)
                 
