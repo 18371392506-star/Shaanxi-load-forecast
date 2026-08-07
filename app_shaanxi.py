@@ -15,6 +15,10 @@ from io import BytesIO
 import zipfile
 import platform
 from sklearn.decomposition import PCA
+import warnings
+
+# 屏蔽 openpyxl 关于缺失默认样式的警告，让部署日志保持清爽
+warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
 
 # ============================================================
 # 字体设置
@@ -121,7 +125,7 @@ class EleCurve:
     def _parse_date_series(self, s: pd.Series) -> pd.Series:
         """Convert date column to pandas datetime."""
         s = s.astype(str)
-    
+        
         if pd.api.types.is_datetime64_any_dtype(s):
             return s
 
@@ -373,7 +377,7 @@ class EleCurve:
         return forecast
 
     # =================================================================
-    # 以下两个方法替换了原来的 FPCA 相关逻辑，使用 sklearn.decomposition.PCA
+    # 以下两个方法使用 sklearn.decomposition.PCA
     # =================================================================
     def prop_fpca_fit(self, prop_train, plot=False):
         """使用 PCA 替代 FPCA 对负荷曲线进行降维"""
@@ -606,6 +610,8 @@ class EleCurve:
 def process_weather_data(uploaded_file):
     """处理天气数据"""
     try:
+        # 修复点：确保文件指针在最开头
+        uploaded_file.seek(0)
         df = pd.read_excel(uploaded_file)
         
         if 'record_time' not in df.columns:
@@ -642,8 +648,9 @@ def process_weather_data(uploaded_file):
         return None
 
 
-def process_single_day_data(filepath, filename):
-    """处理单个用户侧用电量文件"""
+def process_single_day_data(uploaded_file):
+    """处理单个用户侧用电量文件 (内存优化版)"""
+    filename = uploaded_file.name
     date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
     
     if not date_match:
@@ -654,8 +661,11 @@ def process_single_day_data(filepath, filename):
     formatted_date = f"{date_obj.year}年{date_obj.month}月{date_obj.day}日"
 
     try:
-        df_raw = pd.read_excel(filepath, header=0)
-    except Exception:
+        # 修复点：直接读取 Streamlit 的 UploadedFile，不写磁盘
+        uploaded_file.seek(0)
+        df_raw = pd.read_excel(uploaded_file, header=0)
+    except Exception as e:
+        st.warning(f"解析文件 {filename} 失败: {e}")
         return pd.DataFrame()
 
     times = []
@@ -682,18 +692,12 @@ def process_single_day_data(filepath, filename):
 
 
 def consolidate_customer_data(uploaded_files):
-    """整合所有用户侧用电量数据"""
+    """整合所有用户侧用电量数据 (内存优化版)"""
     all_data_frames = []
     
     for uploaded_file in uploaded_files:
-        filename = uploaded_file.name
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
-        
-        df_day = process_single_day_data(tmp_path, filename)
-        os.unlink(tmp_path)
+        # 修复点：去掉了 tempfile，直接传递流对象
+        df_day = process_single_day_data(uploaded_file)
         
         if not df_day.empty:
             all_data_frames.append(df_day)
@@ -903,7 +907,7 @@ def to_excel_bytes(df):
 
 
 # ============================================================
-# Streamlit 主界面（中文）
+# Streamlit 主界面
 # ============================================================
 def main():
     st.title("⚡ 陕西电力负荷预测系统")
