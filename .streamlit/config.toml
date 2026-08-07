@@ -1,6 +1,9 @@
-[theme]
-primaryColor = "#1f77b4"
-backgroundColor = "#ffffff"
-
 [server]
-maxUploadSize = 100
+# 增加文件上传大小限制，例如调整为 500MB
+maxUploadSize = 500
+
+# 关闭 XSRF 保护（在 Streamlit Cloud 解决 400 错误的有效手段）
+enableXsrfProtection = false
+
+# 启用 CORS
+enableCORS = false
