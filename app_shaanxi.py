@@ -16,6 +16,7 @@ import zipfile
 import platform
 from sklearn.decomposition import PCA
 import warnings
+from importlib.metadata import version
 
 # 屏蔽 openpyxl 关于缺失默认样式的警告，让部署日志保持清爽
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
@@ -345,7 +346,18 @@ class EleCurve:
         return df_day_pred
 
     def ele_fit(self, ele_train):
-        model = Prophet(**self.prophet_params)
+        # 显式加载后端，避免自动探测掩盖原始异常并报 stan_backend 属性缺失。
+        params = dict(self.prophet_params)
+        params["stan_backend"] = "CMDSTANPY"
+        try:
+            model = Prophet(**params)
+        except Exception as exc:
+            raise RuntimeError(
+                "Prophet 计算后端初始化失败，请检查部署依赖并重新构建环境。"
+                f"当前版本：Python {platform.python_version()}，"
+                f"prophet {version('prophet')}，cmdstanpy {version('cmdstanpy')}。"
+                f"原始错误：{type(exc).__name__}: {exc}"
+            ) from exc
         for r in self.features:
             if r in ele_train.columns:
                 model.add_regressor(r)
