@@ -17,6 +17,22 @@ import platform
 from sklearn.decomposition import PCA
 import warnings
 from importlib.metadata import version
+import gc
+import logging
+from openpyxl import load_workbook
+
+
+def log_memory_usage(stage):
+    """在部署日志中记录主进程内存峰值，不影响 Windows 使用。"""
+    try:
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak_mb = peak / (1024 * 1024 if platform.system() == 'Darwin' else 1024)
+        logging.getLogger(__name__).warning(
+            "[memory] %s | Python peak RSS: %.1f MiB", stage, peak_mb
+        )
+    except (ImportError, OSError, AttributeError):
+        pass
 
 # 屏蔽 openpyxl 关于缺失默认样式的警告，让部署日志保持清爽
 warnings.filterwarnings('ignore', category=UserWarning, module='openpyxl')
@@ -690,7 +706,7 @@ def process_weather_data(uploaded_file):
 
 
 def process_single_day_data(uploaded_file):
-    """处理单个用户侧用电量文件 (内存优化版)"""
+    """逐行读取负荷文件，每批最多 256 行，仅保留 96 个时段的合计。"""
     filename = uploaded_file.name
     date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
     
@@ -701,35 +717,45 @@ def process_single_day_data(uploaded_file):
     date_obj = pd.to_datetime(date_str)
     formatted_date = f"{date_obj.year}年{date_obj.month}月{date_obj.day}日"
 
+    workbook = None
     try:
-        # 修复点：直接读取 Streamlit 的 UploadedFile，不写磁盘
         uploaded_file.seek(0)
-        df_raw = pd.read_excel(uploaded_file, header=0)
+        workbook = load_workbook(uploaded_file, read_only=True, data_only=True, keep_links=False)
+        sheet = workbook.worksheets[0]
+        header = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        columns = {}
+        for index, name in enumerate(header):
+            if name is not None:
+                columns.setdefault(str(name).strip(), index)
+        selected = [(i - 1, columns[f'段{i}']) for i in range(1, 97) if f'段{i}' in columns]
+        totals = np.zeros(96, dtype=float)
+        if selected:
+            slots = [slot for slot, _ in selected]
+            batch = []
+
+            def add_batch():
+                # 保留原有规则：文本数字转数值，无效或空单元格不计入合计。
+                values = pd.DataFrame(batch).apply(pd.to_numeric, errors='coerce')
+                totals[slots] += values.sum(axis=0).to_numpy(dtype=float)
+                batch.clear()
+
+            for row in sheet.iter_rows(min_row=2, max_col=max(index for _, index in selected) + 1, values_only=True):
+                batch.append([row[index] for _, index in selected])
+                if len(batch) >= 256:
+                    add_batch()
+            if batch:
+                add_batch()
+        return pd.DataFrame({
+            'date': formatted_date,
+            'time': np.arange(1, 97),
+            'ele': totals,
+        })
     except Exception as e:
         st.warning(f"解析文件 {filename} 失败: {e}")
         return pd.DataFrame()
-
-    times = []
-    elect_sums = []
-
-    for i in range(1, 97):
-        col_name = f"段{i}"
-        if col_name in df_raw.columns:
-            segment_data = pd.to_numeric(df_raw[col_name], errors='coerce')
-            daily_sum = segment_data.sum()
-            times.append(i)
-            elect_sums.append(daily_sum)
-        else:
-            times.append(i)
-            elect_sums.append(0.0)
-
-    df_day = pd.DataFrame({
-        'date': formatted_date,
-        'time': times,
-        'ele': elect_sums
-    })
-
-    return df_day
+    finally:
+        if workbook is not None:
+            workbook.close()
 
 
 def consolidate_customer_data(uploaded_files):
@@ -1019,6 +1045,17 @@ def main():
     
     # 处理数据并预测
     if process_btn and weather_file and customer_files:
+        # 新运行开始前释放上次结果，避免新旧模型和数据同时占用内存。
+        for key in (
+            'model', 'future_result', 'ele_metrics', 'ele_train', 'ele_test',
+            'prop_test', 'forecast_ele', 'df_apr_day_forecast',
+            'merged_df', 'future_weather_df', 'prepare_downloads',
+        ):
+            st.session_state.pop(key, None)
+        st.session_state.prediction_done = False
+        st.session_state.data_processed = False
+        gc.collect()
+        log_memory_usage('start')
         try:
             with st.spinner("正在处理数据..."):
                 # 处理天气数据
@@ -1036,6 +1073,7 @@ def main():
                     st.error("用户用电数据处理失败")
                     return
                 st.success(f"✅ 用户用电数据整合完成，共 {len(customer_df)} 条记录")
+                log_memory_usage('load data aggregated')
                 
                 # 合并数据
                 st.info("📊 步骤3/4: 合并历史数据...")
@@ -1047,8 +1085,8 @@ def main():
                 future_weather_df = create_future_weather(weather_df, customer_df)
                 st.success(f"✅ 未来天气数据准备完成，共 {len(future_weather_df)} 条记录")
                 
-                st.session_state.merged_df = merged_df
-                st.session_state.future_weather_df = future_weather_df
+                # 此两张表仅用于本次训练，不再放入会话长期保存。
+                del weather_df, customer_df
                 
                 # 数据预览
                 st.markdown("---")
@@ -1080,12 +1118,15 @@ def main():
                 status_text.text("准备数据...")
                 progress_bar.progress(20)
                 model.prepare_data(merged_df)
+                del merged_df
                 
                 # 春节填充
                 status_text.text("执行春节数据填充...")
                 progress_bar.progress(30)
                 custom_sf_dates = pd.date_range(start=sf_start, end=sf_end)
+                log_memory_usage('spring festival imputation starting')
                 model.perform_sf_imputation(sf_dates_to_impute=custom_sf_dates)
+                log_memory_usage('spring festival imputation complete')
                 
                 # 分割数据
                 status_text.text("分割训练集和测试集...")
@@ -1125,6 +1166,8 @@ def main():
                 status_text.text("预测未来负荷...")
                 progress_bar.progress(90)
                 future_result = model.predict_future_curve(future_weather_df, return_long=True)
+                del future_weather_df
+                log_memory_usage('forecast complete')
                 
                 progress_bar.progress(100)
                 status_text.text("训练完成！")
@@ -1271,6 +1314,8 @@ def main():
         # 下载按钮
         st.markdown("---")
         st.subheader("📥 下载预测结果")
+        if not st.checkbox("准备下载文件（需要下载时勾选）", key="prepare_downloads"):
+            return
         
         col1, col2, col3 = st.columns(3)
         
