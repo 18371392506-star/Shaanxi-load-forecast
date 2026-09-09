@@ -620,26 +620,52 @@ class EleCurve:
 # 数据处理函数
 # ============================================================
 def process_weather_data(uploaded_file):
-    """处理天气数据"""
+    """兼容中英文天气表头，将气温按时间插值为 15 分钟数据。"""
     try:
-        # 修复点：确保文件指针在最开头
         uploaded_file.seek(0)
         df = pd.read_excel(uploaded_file)
-        
-        if 'record_time' not in df.columns:
-            st.error(f"天气数据缺少 'record_time' 列！实际列名: {list(df.columns)}")
+        df.columns = [str(col).strip().lstrip('\ufeff').strip() for col in df.columns]
+        if df.columns.duplicated().any():
+            st.error("天气数据包含重复列名，请为每一列使用不同的名称。")
             return None
-        
-        if 'value' not in df.columns:
-            st.error(f"天气数据缺少 'value' 列！")
+
+        time_col = next((col for col in ('record_time', '时间') if col in df.columns), None)
+        temp_col = next((col for col in ('value', '气温') if col in df.columns), None)
+        if time_col is None or temp_col is None:
+            st.error(
+                "天气数据需要“时间”和“气温”两列，也支持旧格式 record_time 和 value。"
+                f"实际列名: {list(df.columns)}"
+            )
             return None
-        
-        df['record_time'] = pd.to_datetime(df['record_time'], errors='coerce')
-        df = df.dropna(subset=['record_time'])
-        df = df.sort_values('record_time')
-        
-        df = df.set_index('record_time')
-        df_15min = df.resample('15min').interpolate(method='time')
+
+        # 当前预测模型只使用气温，其他天气列不参与数值插值。
+        df = df[[time_col, temp_col]].copy()
+        df.columns = ['record_time', 'value']
+        df = df.dropna(how='all')
+        if df.empty:
+            st.error("天气文件中没有有效数据。")
+            return None
+
+        df['record_time'] = pd.to_datetime(df['record_time'], format='mixed', errors='coerce')
+        df['value'] = pd.to_numeric(df['value'], errors='coerce')
+        invalid = df['record_time'].isna() | ~np.isfinite(df['value'])
+        if invalid.any():
+            rows = ', '.join(str(index + 2) for index in df.index[invalid][:5])
+            st.error(f"天气数据存在无效或缺失的时间/气温，请检查 Excel 第 {rows} 行。")
+            return None
+
+        if df['record_time'].duplicated().any():
+            st.warning("天气数据中有重复时间，已按同一时间的平均气温合并。")
+        df = df.groupby('record_time')[['value']].mean().sort_index()
+
+        # 保留非整刻钟的观测时间，插值后再选取 15 分钟网格。
+        grid = pd.date_range(df.index.min().ceil('15min'), df.index.max().floor('15min'), freq='15min')
+        if grid.empty:
+            st.error("天气数据时间范围内没有 15 分钟整刻度，请补充天气记录。")
+            return None
+        df = df.reindex(df.index.union(grid)).sort_index()
+        df_15min = df.interpolate(method='time', limit_area='inside').reindex(grid)
+        df_15min.index.name = 'record_time'
         df_15min = df_15min.reset_index()
         
         df_15min['date'] = (
@@ -648,8 +674,11 @@ def process_weather_data(uploaded_file):
             df_15min['record_time'].dt.day.astype(str) + '日'
         )
         
-        df_15min['time'] = df_15min.groupby('date').cumcount() + 1
-        df_15min = df_15min[df_15min['time'] <= 96]
+        # 00:00 对应第 1 段；数据未从午夜开始时也保持真实时段编号。
+        df_15min['time'] = (
+            df_15min['record_time'].dt.hour * 4 +
+            df_15min['record_time'].dt.minute // 15 + 1
+        )
         
         df_15min = df_15min[['date', 'time', 'value']]
         df_15min = df_15min.rename(columns={'value': 'temp'})
@@ -932,7 +961,8 @@ def main():
         weather_file = st.file_uploader(
             "上传天气数据 (weather_hourly_data.xlsx)",
             type=["xlsx"],
-            key="weather"
+            key="weather",
+            help="支持“时间、气温”或“record_time、value”列名；其他天气列可保留。"
         )
         
         customer_files = st.file_uploader(
